@@ -80,7 +80,6 @@
 -- Maid:Remove()
 -- Maid:Clean/Destroy()
 -- Maid:Push()
--- Maid:Pop()
 -- Maid:SetParent()
 --
 -- type BulkMoveTo
@@ -93,7 +92,7 @@
 -- .AsyncTaskDefer()
 -- .AsyncTaskDelay()
 -- AsyncTask:IsRunning()
--- AsyncTask:Clean/Destroy()
+-- AsyncTask:Destroy()
 --
 -- type DLL_Node
 -- .DLL_Create()
@@ -358,13 +357,13 @@ function Module.V3_LerpClamp(A: Vector3, B: Vector3, T: number): Vector3
    return Module.V3_Lerp(A, B, math.clamp(T, 0, 1))
 end
 function Module.V3_Clamp(V: Vector3, Min: Vector3, Max: Vector3): Vector3
-   return Module.V3_Min(Module.V3_Max(V, Min), Max) 
+   return Module.V3_Min(Module.V3_Max(V, Min), Max)
 end
 function Module.V3_Abs(V: Vector3): Vector3
    return Module.V3_Max(V, -V)
 end
 function Module.V3_SafeUnit(V: Vector3)
-   return if V ~= Vector3.zero then V.Unit else V 
+   return if V ~= Vector3.zero then V.Unit else V
 end
 
 Module.V3_XZ = Vector3.new(1, 0, 1)
@@ -651,16 +650,16 @@ export type Maid = {
    -- when the child is cleaned up.
    Push: (Parent: Maid)->(Maid);
 
-   -- Call this on the child! Remove a child maid from its parent maid WITHOUT
-   -- CLEANING UP THE CHILD MAID. Returns the parent maid, if the child had a
-   -- parent.
-   Pop: (Child: Maid)->(Maid?);
-
-   -- Call this on the child! Updates the parent of the maid, without cleaning
-   -- up the child maid. Maid:Pop() is equivalent to Maid:SetParent(nil). This
-   -- method can also be used to set a new parent for the maid, like
-   -- Maid:SetParent(Parent). If the maid had a previous parent then it will be
-   -- removed from the parent automatically. Returns the previous parent.
+   -- Call this on the child! Updates the parent of the child maid, and will
+   -- never affect the child's lifetime. Returns the previous parent, if there
+   -- was one.
+   --
+   -- Remove from from a parent, like Child:SetParent(nil).
+   -- Set a new parent, like Child:SetParent(Parent).
+   --
+   -- If setting a new parent, if the maid had a previous parent then it will
+   -- be removed from that parent first.
+   --
    SetParent: (Child: Maid, Parent: Maid?)->(Maid?);
 }
 do
@@ -695,7 +694,7 @@ do
       -- don't think that's bad enough to to be worth storing a lookup table of
       -- tables that have already been seen.
       debug.profilebegin("MaidClean")
-      do -- Equivalent to Maid:Pop().
+      do -- Equivalent to Maid:SetParent(nil).
          local Parent = Maid.MaidParent
          if Parent then
             Maid.MaidParent = nil
@@ -736,7 +735,7 @@ do
                      ValueMaid.MaidParent = nil
                   else
                      -- Remove the maid from it's previous parent.
-                     -- Equivalent to Maid:Pop().
+                     -- Equivalent to Maid:SetParent(nil).
                      local Index = table.find(ValueMaidParent.MaidValues, Maid)
                      if Index then
                         table.remove(ValueMaidParent.MaidValues, Index)
@@ -760,18 +759,6 @@ do
       }, MaidMeta) :: any
       Parent.MaidValues[#Parent.MaidValues+1] = Child
       return Child
-   end
-
-   function MaidMeta.Pop(Child: Maid): Maid?
-      local Parent = Child.MaidParent
-      if Parent then
-         Child.MaidParent = nil
-         local Index = table.find(Parent.MaidValues, Child)
-         if Index then
-            table.remove(Parent.MaidValues, Index)
-         end
-      end
-      return Parent
    end
 
    function MaidMeta.SetParent(Child: Maid, Parent: Maid?): Maid?
@@ -851,8 +838,6 @@ export type AsyncTask = {
    Thread: thread?;
 
    IsRunning: (AT: AsyncTask)->(boolean);
-
-   Clean: (AT: AsyncTask)->();
    Destroy: (AT: AsyncTask)->();
 }
 do
@@ -863,7 +848,7 @@ do
       return if AT.Thread then coroutine.status(AT.Thread) ~= "dead" else false
    end
 
-   function AsyncTaskMeta.Clean(AT: AsyncTask)
+   function AsyncTaskMeta.Destroy(AT: AsyncTask)
       local Thread = AT.Thread
       if Thread then
          AT.Thread = nil
@@ -872,7 +857,6 @@ do
          end
       end
    end
-   AsyncTaskMeta.Destroy = AsyncTaskMeta.Clean
 
    function Module.AsyncTaskSpawn(Func: ()->()): AsyncTask
       local AT: AsyncTask = setmetatable({}, AsyncTaskMeta) :: any
