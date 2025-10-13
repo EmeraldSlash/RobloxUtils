@@ -872,7 +872,7 @@ do
          end
       end
    end
-   AsyncTaskMeta.Destroy = AsyncTaskMeta.Destroy
+   AsyncTaskMeta.Destroy = AsyncTaskMeta.Clean
 
    function Module.AsyncTaskSpawn(Func: ()->()): AsyncTask
       local AT: AsyncTask = setmetatable({}, AsyncTaskMeta) :: any
