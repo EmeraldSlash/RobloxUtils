@@ -736,7 +736,7 @@ do
                   else
                      -- Remove the maid from it's previous parent.
                      -- Equivalent to Maid:SetParent(nil).
-                     local Index = table.find(ValueMaidParent.MaidValues, Maid)
+                     local Index = table.find(ValueMaidParent.MaidValues, ValueMaid)
                      if Index then
                         table.remove(ValueMaidParent.MaidValues, Index)
                      end
