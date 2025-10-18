@@ -174,31 +174,26 @@ export type Props = {
 }
 function Module.PropsMerge(FirstProps: Props, ...: Props): Props
 	local Props = table.clone(FirstProps)
-	local PropsTables: {Props} = {...}
-	for _, ThisProps in PropsTables do
-		for Key, Value in ThisProps do
+	for Index = 1, select("#", ...) do
+		for Key, Value in select(Index, ...) do
 			Props[Key] = Value
 		end
 	end
 	return Props
 end
 function Module.PropsApply(TargetInstance: Instance, ...: Props): Instance
-
-	local PropsTables: {Props} = {...}
-	if PropsTables[1] then
-
+	if select(1, ...) then
 		local Props
-		if not PropsTables[2] then
-			Props = PropsTables[1]
+		if not select(2, ...) then
+			Props = select(1, ...)
 		else
 			Props = {}
-			for _, ThisProps in PropsTables do
-				for Key, Value in ThisProps do
+			for Index = 1, select("#", ...) do
+				for Key, Value in select(Index, ...) do
 					Props[Key] = Value
 				end
 			end
 		end
-
 		for Key, Value in Props do
 			if Key ~= "Parent" then
 				(TargetInstance :: any)[Key] = Value
@@ -207,9 +202,7 @@ function Module.PropsApply(TargetInstance: Instance, ...: Props): Instance
 		if Props.Parent then
 			TargetInstance.Parent = Props.Parent
 		end
-
 	end
-
 	return TargetInstance
 end
 
@@ -228,28 +221,22 @@ end
 -- Similar to PropsApply, but used for any kind of object which may not be an
 -- instance (such as RaycastParams and OverlapParams).
 function Module.ObjectPropsApply<T>(Object: T, ...: Props): T
-
-	local PropsTables: {Props} = {...}
-	if PropsTables[1] then
-
+	if select(1, ...) then
 		local Props
-		if not PropsTables[2] then
-			Props = PropsTables[1]
+		if not select(2, ...) then
+			Props = select(1, ...)
 		else
 			Props = {}
-			for _, ThisProps in PropsTables do
-				for Key, Value in ThisProps do
+			for Index = 1, select("#", ...) do
+				for Key, Value in select(Index, ...) do
 					Props[Key] = Value
 				end
 			end
 		end
-
 		for Key, Value in Props do
 			(Object :: any)[Key] = Value
 		end
-
 	end
-
 	return Object
 end
 
@@ -1304,9 +1291,9 @@ do
 	@native
 	function CacheMeta.Add(Cache: Cache, ...: any): boolean
 		local JustDirty = false
-		local Array = {...} -- even if ... has nils, #Array will be correct.
-		for Index = 1, #Array do
-			local Value = Array[Index]
+		-- Even if ... has nils, the count will be correct.
+		for Index = 1, select("#", ...) do
+			local Value = select(Index, ...)
 			Cache.CurrCount += 1
 			if Cache.Array[Cache.CurrCount] ~= Value then
 				Cache.Array[Cache.CurrCount] = Value
@@ -1320,7 +1307,8 @@ do
 	@native
 	function CacheMeta.AddArray(Cache: Cache, Array: {any}): boolean
 		local JustDirty = false
-		for Index = 1, #Array do -- assume that #Array is correct: if not, it is the user's fault.
+		-- Assume that #Array is correct: if not, it is the user's fault.
+		for Index = 1, #Array do
 			local Value = Array[Index]
 			Cache.CurrCount += 1
 			if Cache.Array[Cache.CurrCount] ~= Value then
@@ -1337,9 +1325,9 @@ do
 	@native
 	function CacheMeta.Mark(Cache: Cache, ...: boolean): boolean
 		local JustDirty = false
-		local Array = {...} -- even if ... has nils, #Array will be correct.
-		for Index = 1, #Array do
-			local Dirty = Array[Index]
+		-- Even if ... has nils, the count will be correct.
+		for Index = 1, select("#", ...) do
+			local Dirty = select(Index, ...)
 			if Dirty then
 				Cache.DirtySoFar = true
 				JustDirty = true
