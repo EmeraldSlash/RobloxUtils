@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 2 (2025-10-17)
+-- Version 3 (2025-10-18)
 --
 
 --
@@ -79,6 +79,7 @@
 -- Maid:Add()
 -- Maid:Remove()
 -- Maid:Clean/Destroy()
+-- Maid:Reset()
 -- Maid:Push()
 -- Maid:SetParent()
 --
@@ -634,9 +635,18 @@ export type Maid = {
 	};
 	MaidParent: Maid?;
 
-	-- Cleanup methods (different aliases for the same method)
+	-- Cleanup methods (different aliases for the same method). After calling one
+	-- of these methods, the maid will be in a completely empty state as if it
+	-- was just created using `Module.MaidNew()`.
 	Clean: (Maid: Maid)->();
 	Destroy: (Maid: Maid)->();
+
+	-- This method will do the same thing as the above Clean/Destroy methods, but
+	-- it will keep the maid's parent the same. This method is therefore the
+	-- most efficient way to reset a child maid's lifetime without changing its
+	-- parent. After calling this method, the maid will be in an empty state as
+	-- if it was just created using `parent:Push()`.
+	Reset: (Maid: Maid)->();
 
 	-- Adds or removes values from a Maid. It is not recommended that you add
 	-- child maids this way; rather you should prefer `child = parent:Push()` or
@@ -644,7 +654,7 @@ export type Maid = {
 	Add: <T...>(Maid: Maid, T...)->(T...);
 	Remove: <T...>(Maid: Maid, T...)->(T...);
 
-	-- Creates a new, unrelated Maid. Equivalent to Module.MaidNew().
+	-- Creates a new, unrelated Maid. Equivalent to `Module.MaidNew()`.
 	New: (_: any)->();
 
 	-- Call this on the parent! Create a child maid whose lifetime is tied to the
@@ -656,8 +666,8 @@ export type Maid = {
 	-- never affect the child's lifetime. Returns the previous parent, if there
 	-- was one.
 	--
-	-- Remove from a parent: `Child:SetParent(nil)`.
-	-- Set a new parent: `Child:SetParent(Parent)`.
+	-- Remove from a parent: `child:SetParent(nil)`.
+	-- Set a new parent: `child:SetParent(parent)`.
 	--
 	-- If setting a new parent, if the maid had a previous parent then it will
 	-- be removed from that parent first. So maids can only have one parent at
@@ -678,40 +688,23 @@ do
 
 	function MaidMeta.Remove<T...>(Maid: Maid, ...: T...): (T...)
 		for Index = 1, select("#", ...) do
-			local Index = table.find(Maid.MaidValues, select(Index, ...))
-			if Index then
-				table.remove(Maid.MaidValues, Index)
+			local ValueIndex = table.find(Maid.MaidValues, select(Index, ...))
+			if ValueIndex then
+				table.remove(Maid.MaidValues, ValueIndex)
 			end
 		end
 		return ...
 	end
 
-	function MaidMeta.Clean(Maid: Maid)
-		-- Recursive references will also be handled without infinite loops because
-		-- every step will remove something. However it will be inefficient in time
-		-- and memory usage as tables will be redundantly pushed to the stack, but I
-		-- don't think that's bad enough to to be worth storing a lookup table of
-		-- tables that have already been seen.
-		debug.profilebegin("MaidClean")
-		do -- Equivalent to Maid:SetParent(nil).
-			local Parent = Maid.MaidParent
-			if Parent then
-				Maid.MaidParent = nil
-				local Index = table.find(Parent.MaidValues, Maid)
-				if Index then
-					table.remove(Parent.MaidValues, Index)
-				end
-			end
-		end
-		local MaidStack: {Maid} = {Maid}
+	local function MaidCleanRecursive(Maid: Maid)
+		-- Cyclic maid references will be handled without infinite loops because
+		-- every step will remove something. This recursive implementation is the
+		-- most efficient way to clean up maids, faster even than an iterative
+		-- implementation.
 		while true do
-			local CurrentMaid = MaidStack[#MaidStack]
-			local Value = table.remove(CurrentMaid.MaidValues)
+			local Value = table.remove(Maid.MaidValues)
 			if not Value then
-				MaidStack[#MaidStack] = nil
-				if not MaidStack[1] then
-					break
-				end
+				break
 			elseif typeof(Value) == "RBXScriptConnection" then
 				Value:Disconnect()
 			elseif typeof(Value) == "Instance" then
@@ -725,12 +718,13 @@ do
 					local ValueMaid = Value :: Maid
 					local ValueMaidParent = ValueMaid.MaidParent
 					if ValueMaidParent then
-						if ValueMaidParent == CurrentMaid then
-							-- Avoid unnecessary searching in parent since we know
-							-- that it has already been removed.
+						if ValueMaidParent == Maid then
+							-- Avoid unnecessary searching in parent since we know that
+							-- it has already been removed. This provides a small
+							-- speed improvement.
 							ValueMaid.MaidParent = nil
 						else
-							-- Remove the maid from it's previous parent.
+							-- Remove the maid from its unrelated previous parent.
 							-- Equivalent to Maid:SetParent(nil).
 							local Index = table.find(ValueMaidParent.MaidValues, ValueMaid)
 							if Index then
@@ -739,7 +733,7 @@ do
 							ValueMaid.MaidParent = nil
 						end
 					end
-					MaidStack[#MaidStack+1] = ValueMaid
+					MaidCleanRecursive(Maid)
 				elseif type((Value :: HasDestroy<any>).Destroy) == "function" then
 					(Value :: HasDestroy<any>):Destroy()
 				elseif type((Value :: HasDisconnect<any>).Disconnect) == "function" then
@@ -749,9 +743,37 @@ do
 				end
 			end
 		end
+	end
+
+	function MaidMeta.Clean(Maid: Maid)
+		debug.profilebegin("MaidClean")
+
+		do -- Equivalent to Maid:SetParent(nil).
+			local Parent = Maid.MaidParent
+			if Parent then
+				Maid.MaidParent = nil
+				local Index = table.find(Parent.MaidValues, Maid)
+				if Index then
+					table.remove(Parent.MaidValues, Index)
+				end
+			end
+		end
+
+		-- The above SetParent code is only needed for the root maid because for
+		-- all descendant maids their parents will be removed within the cleaning
+		-- loop. Therefore we can get a small speed improvement by separating the
+		-- recursive cleaning function from the root cleaning function.
+		MaidCleanRecursive(Maid)
+
 		debug.profileend()
 	end
 	MaidMeta.Destroy = MaidMeta.Clean
+
+	function MaidMeta.Reset(Maid: Maid)
+		debug.profilebegin("MaidClean")
+		MaidCleanRecursive(Maid)
+		debug.profileend()
+	end
 
 	function MaidMeta.Push(Parent: Maid): Maid
 		local Child: Maid = setmetatable({
