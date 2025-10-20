@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 3 (2025-10-18)
+-- Version 4 (2025-10-20)
 --
 
 --
@@ -89,10 +89,12 @@
 -- BulkMoveTo:Apply()
 --
 -- type AsyncTask
--- .AsyncTaskSpawn()
--- .AsyncTaskDefer()
--- .AsyncTaskDelay()
--- AsyncTask:IsRunning()
+-- .AsyncTaskNew()
+-- AsyncTask:IsActive()
+-- AsyncTask:Spawn()
+-- AsyncTask:Defer()
+-- AsyncTask:Delay()
+-- AsyncTask:Close()
 -- AsyncTask:Destroy()
 --
 -- type DLL_Node
@@ -844,21 +846,65 @@ end
 --
 -- AsyncTask
 --
+-- Example usage:
+--[[
+CharacterLoadTask = CharacterMaid:Add(
+	Module.AsyncTaskNew():Spawn(function()
+		local Root = Character:WaitForChild("HumanoidRootPart")
+	end))
+--]]
+--
 export type AsyncTask = {
+	-- The thread that is currently tracked by the AsyncTask.
+	-- Empty   : thread == nil                 -> IsActive() == false
+	-- Finished: thread == nil                 -> IsActive() == false
+	-- Failed  : status(thread) == "dead"      -> IsActive() == false
+	-- Running : status(thread) == "running"   -> IsActive() == true
+	-- Yielded : status(thread) == "suspended" -> IsActive() == true
+	-- Normal  : status(thread) == "normal"    -> IsActive() == true
 	Thread: thread?;
 
-	IsRunning: (AT: AsyncTask)->(boolean);
-	Destroy: (AT: AsyncTask)->();
+	-- Create a new empty AsyncTask. Equivalent to Module.AsyncTaskNew().
+	New: (_: AsyncTask)->(AsyncTask);
+
+	-- The correct way to check if there is an active thread within this
+	-- AsyncTask, such that a new thread should not be added to it.
+	IsActive: (AT: AsyncTask)->(boolean);
+
+	-- Correct ways to start a new thread. Can be chained, throws an error if the
+	-- AsyncTask already has a thread.
+	--
+	-- Luau's legacy type solver does not play nicely with generic packs and will
+	-- cause lots of false positive errors, so use the @Typecheck:Partial type
+	-- definition to fix that. Otherwise, if using the new solver you should be
+	-- able to use @Typecheck:Full.
+	--
+	--[[ @Typecheck:Full
+	Spawn: <T...>(AT: AsyncTask, Func: (T...)->() | thread, T...)->(AsyncTask);
+	Defer: <T...>(AT: AsyncTask, Func: (T...)->() | thread, T...)->(AsyncTask);
+	Delay: <T...>(At: AsyncTask, Duration: number, Func: (T...)->() | thread, T...)->(AsyncTask);
+	--]]
+	---[[ @Typecheck:Partial
+	Spawn: (AT: AsyncTask, Func: (...any)->() | thread, ...any)->(AsyncTask);
+	Defer: (AT: AsyncTask, Func: (...any)->() | thread, ...any)->(AsyncTask);
+	Delay: (At: AsyncTask, Duration: number, Func: (...any)->() | thread, ...any)->(AsyncTask);
+	--]]
+
+	-- Clean up the AsyncTask by closing the thread (if it's not the currently
+	-- running thread) and always untracking the thread. Can be chained, does
+	-- not throw errors. The same AsyncTask can be reused afterwards.
+	Close: (AT: AsyncTask)->(AsyncTask);
+	Destroy: (AT: AsyncTask)->(AsyncTask);
 }
 do
 	local AsyncTaskMeta: AsyncTask =
 		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
 
-	function AsyncTaskMeta.IsRunning(AT: AsyncTask): boolean
+	function AsyncTaskMeta.IsActive(AT: AsyncTask): boolean
 		return if AT.Thread then coroutine.status(AT.Thread) ~= "dead" else false
 	end
 
-	function AsyncTaskMeta.Destroy(AT: AsyncTask)
+	function AsyncTaskMeta.Close(AT: AsyncTask): AsyncTask
 		local Thread = AT.Thread
 		if Thread then
 			AT.Thread = nil
@@ -866,34 +912,48 @@ do
 				coroutine.close(Thread)
 			end
 		end
+		return AT
+	end
+	AsyncTaskMeta.Destroy = AsyncTaskMeta.Close
+
+	local function AssignThread<T...>(AT: AsyncTask, Func: (T...)->() | thread)
+		assert(not AT:IsActive(), "AsyncTask already has an active thread!")
+		if type(Func) == "thread" then
+			AT.Thread = Func
+		else
+			AT.Thread = coroutine.create(function(...: T...)
+				Func(...)
+				AT.Thread = nil
+			end)
+		end
+	end
+	function AsyncTaskMeta.Spawn<T...>(
+		AT: AsyncTask, Func: (T...)->() | thread, ...: T...
+	): AsyncTask
+		AssignThread(AT, Func)
+		task.spawn(AT.Thread :: thread, ...)
+		return AT
+	end
+	function AsyncTaskMeta.Defer<T...>(
+		AT: AsyncTask, Func: (T...)->() | thread, ...: T...
+	): AsyncTask
+		AssignThread(AT, Func)
+		task.defer(AT.Thread :: thread, ...)
+		return AT
+	end
+	function AsyncTaskMeta.Delay<T...>(
+		AT: AsyncTask, Duration: number, Func: (T...)->() | thread, ...: T...
+	): AsyncTask
+		AssignThread(AT, Func)
+		task.delay(Duration, AT.Thread :: thread, ...)
+		return AT
 	end
 
-	function Module.AsyncTaskSpawn(Func: ()->()): AsyncTask
-		local AT: AsyncTask = setmetatable({}, AsyncTaskMeta) :: any
-		AT.Thread = coroutine.create(function()
-			Func()
-			AT.Thread = nil
-		end)
-		task.spawn(AT.Thread :: any)
-		return AT
+	function AsyncTaskMeta.New(_: AsyncTask): AsyncTask
+		return setmetatable({}, AsyncTaskMeta) :: any
 	end
-	function Module.AsyncTaskDefer(Func: ()->()): AsyncTask
-		local AT: AsyncTask = setmetatable({}, AsyncTaskMeta) :: any
-		AT.Thread = coroutine.create(function()
-			Func()
-			AT.Thread = nil
-		end)
-		task.defer(AT.Thread :: any)
-		return AT
-	end
-	function Module.AsyncTaskDelay(Duration: number, Func: ()->()): AsyncTask
-		local AT: AsyncTask = setmetatable({}, AsyncTaskMeta) :: any
-		AT.Thread = coroutine.create(function()
-			Func()
-			AT.Thread = nil
-		end)
-		task.delay(Duration, AT.Thread :: any)
-		return AT
+	function Module.AsyncTaskNew(): AsyncTask
+		return setmetatable({}, AsyncTaskMeta) :: any
 	end
 end
 
