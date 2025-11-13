@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 4 (2025-10-20)
+-- Version 8 (2025-11-14)
 --
 
 --
@@ -18,10 +18,11 @@
 --
 -- type Props
 -- .PropsMerge()
--- .PropsApply()
+-- .IPropsApply()
+-- .OPropsApply()
 -- .I()
--- .C()
--- .ObjectPropsApply()
+-- .RaycastParamsNew()
+-- .OverlapParamsNew()
 --
 -- .Lerp()
 -- .LerpClamp()
@@ -77,11 +78,15 @@
 -- .MaidNew()
 -- Maid:New()
 -- Maid:Add()
+-- Maid:AddCall()
 -- Maid:Remove()
 -- Maid:Clean/Destroy()
--- Maid:Reset()
+-- Maid:Refresh()
 -- Maid:Push()
 -- Maid:SetParent()
+-- type MaidCall
+-- .MaidCallNew()
+-- MaidCall:Destroy()
 --
 -- type BulkMoveTo
 -- .BMT_New()
@@ -97,13 +102,27 @@
 -- AsyncTask:Close()
 -- AsyncTask:Destroy()
 --
+-- type Signal
+-- .SignalNew()
+-- Signal:Fire()
+-- Signal:Connect()
+-- Signal:ConnectSpawn()
+-- Signal:ConnectDefer()
+-- Signal:Destroy()
+-- type SignalConnection
+-- SignalConnection.Connected
+-- SignalConnection:Destroy/Disconnect()
+--
 -- type DLL_Node
 -- .DLL_Create()
--- .DLL_ClearSentinelReferences()
--- .DLL_ClearLinks()
--- .DLL_Append()
--- .DLL_AppendFirst()
--- .DLL_IsInside()
+-- .DLL_ReplaceSentinel()
+-- .DLL_SentinelQuickReset()
+-- .DLL_Transfer()
+-- .DLL_AppendBefore()
+-- .DLL_AppendAfter()
+-- .DLL_SentinelAppendFirst()
+-- .DLL_SentinelAppendLast()
+-- .DLL_AreLinked()
 -- .DLL_IsSentinel()
 -- .DLL_Remove()
 --
@@ -183,7 +202,16 @@ function Module.PropsMerge(FirstProps: Props, ...: Props): Props
 	end
 	return Props
 end
-function Module.PropsApply(TargetInstance: Instance, ...: Props): Instance
+
+-- Helper function for quickly creating instances.
+function Module.I(ClassName: string, ...: Props)
+	local NewInstance = Instance.new(ClassName)
+	Module.IPropsApply(NewInstance, ...)
+	return NewInstance
+end
+
+-- Helper function for setting properties on an instance.
+function Module.IPropsApply(Object: Instance, ...: Props): Instance
 	if select(1, ...) then
 		local Props
 		if not select(2, ...) then
@@ -198,31 +226,19 @@ function Module.PropsApply(TargetInstance: Instance, ...: Props): Instance
 		end
 		for Key, Value in Props do
 			if Key ~= "Parent" then
-				(TargetInstance :: any)[Key] = Value
+				(Object :: any)[Key] = Value
 			end
 		end
 		if Props.Parent then
-			TargetInstance.Parent = Props.Parent
+			Object.Parent = Props.Parent
 		end
 	end
-	return TargetInstance
+	return Object
 end
 
--- Helper functions for quickly creating and cloning instances.
-function Module.I(ClassName: string, ...: Props)
-	local NewInstance = Instance.new(ClassName)
-	Module.PropsApply(NewInstance, ...)
-	return NewInstance
-end
-function Module.C<T>(TemplateInstance: T & Instance, ...: Props): T
-	local NewInstance = TemplateInstance:Clone()
-	Module.PropsApply(NewInstance, ...)
-	return NewInstance
-end
-
--- Similar to PropsApply, but used for any kind of object which may not be an
--- instance (such as RaycastParams and OverlapParams).
-function Module.ObjectPropsApply<T>(Object: T, ...: Props): T
+-- Helper function similar to IPropsApply, but used for any kind of object which
+-- may not be an instance (such as RaycastParams and OverlapParams).
+function Module.OPropsApply<T>(Object: T, ...: Props): T
 	if select(1, ...) then
 		local Props
 		if not select(2, ...) then
@@ -252,7 +268,7 @@ export type RaycastParamsProps = {
 	IgnoreWater: boolean?;
 }
 function Module.RaycastParamsNew(...: RaycastParamsProps): RaycastParams
-	return Module.ObjectPropsApply(RaycastParams.new(), ...)
+	return Module.OPropsApply(RaycastParams.new(), ...)
 end
 export type OverlapParamsProps = {
 	FilterType: Enum.RaycastFilterType?;
@@ -263,7 +279,7 @@ export type OverlapParamsProps = {
 	MaxParts: number?;
 }
 function Module.OverlapParamsNew(...: OverlapParamsProps): OverlapParams
-	return Module.ObjectPropsApply(OverlapParams.new(), ...)
+	return Module.OPropsApply(OverlapParams.new(), ...)
 end
 
 --
@@ -600,28 +616,78 @@ end
 --
 -- Maid
 --
--- This maid can take all the usual data types (Instances, functions, threads,
--- connections), tables with Destroy or Disconnect methods (Destroy method will
--- always be preferred over Disconnect method), and other Maids (tables that do
--- not have the aforementioned methods but which have a Values table field will
--- be treated as if they are a Maid).
-export type HasDestroy<T> = T & {
-	Destroy: (T)->();
-}
-export type HasDisconnect<T> = T & {
-	Disconnect: (T)->();
+-- This maid API supports recursion, pushing/popping descendant maids, a cleanup
+-- method override option, and running function calls with arguments on
+-- cleanup. See below for reference of all the datatypes that can be put into
+-- the maid.
+
+export type HasMaidClean<T> = T & { MaidClean: (T)->(); }
+export type HasDestroy<T> = T & { Destroy: (T)->(); }
+export type HasDestroyLower<T> = T & { destroy: (T)->(); }
+export type HasDisconnect<T> = T & { Disconnect: (T)->(); }
+export type HasDisconnectLower<T> = T & { disconnect: (T)->(); }
+export type MaidCall<T...> = {
+	Function: (T...)->();
+	Args: {any};
+
+	Destroy: (MaidCall: MaidCall<T...>)->();
 }
 export type Maid = {
 	MaidValues: {
-		-- These are the kinds of things you can add to a Maid.
-		| RBXScriptConnection
-		| Instance
-		| thread
-		| ()->()
-		| HasDestroy<any>
-		| HasDisconnect<any>
+
+		-- Maids can be cleaned up recursively. Any table that has a MaidValues
+		-- field will be treated as if it is a Maid.
 		| Maid
+
+		-- The standard data types that can be cleaned up.
+		| RBXScriptConnection -- Will call Connection:Disconnect() on clean.
+		| Instance -- Will call Instance:Destroy() on clean.
+		| thread -- Will call coroutine.close(Thread) on clean.
+		| ()->() -- Will directly call the function on clean.
+
+		-- The standard methods for cleaning up objects.
+		| HasDestroy<any> -- :Destroy()
+		| HasDestroyLower<any> -- :destroy()
+		| HasDisconnect<any> -- :Disconnect()
+		| HasDisconnectLower<any> -- :disconnect()
+
+		-- Custom cleanup method that will always be called with highest priority,
+		-- taking precedence over the standard methods like Destroy().
+		| HasMaidClean<any>
+
+		-- Enables you to pass a function + arguments to a maid which will be
+		-- directly called when the maid is cleaned up. Use via Maid:AddCall().
+		| MaidCall<any>
+
+		-- Some objects may have issues with the maid calling their default
+		-- destroy/cleanup method, such as throwing an error if the method is
+		-- called redundantly or from triggering self-recursion. There are three
+		-- ways you can avoid this.
+		--
+		-- Option 1: Give the maid a custom scoped cleanup function rather than
+		-- giving the object itself.
+		--[[
+		maid:Add(function()
+			customCleanup(object)
+		end)
+		--]]
+		--
+		-- Option 2: Add a MaidClean method to the object and give the object to
+		-- the maid.
+		--[[
+		object.MaidClean = customCleanup
+		maid:Add(object)
+		--]]
+		--
+		-- Option 3: Create a MaidCall and give it to the maid.
+		--[[
+		maid:AddCall(customCleanup, object)
+		--]]
+
 	};
+
+	-- The parent of the maid. The maid will be removed from its parent
+	-- automatically when cleaned up to prevent memory leaks.
 	MaidParent: Maid?;
 
 	-- Cleanup methods (different aliases for the same method). After calling one
@@ -635,13 +701,27 @@ export type Maid = {
 	-- most efficient way to reset a child maid's lifetime without changing its
 	-- parent. After calling this method, the maid will be in an empty state as
 	-- if it was just created using `parent:Push()`.
-	Reset: (Maid: Maid)->();
+	Refresh: (Maid: Maid)->();
 
 	-- Adds or removes values from a Maid. It is not recommended that you add
 	-- child maids this way; rather you should prefer `child = parent:Push()` or
 	-- `child:SetParent(parent)`.
-	Add: <T...>(Maid: Maid, T...)->(T...);
+	--
+	-- Luau's legacy type solver does not play nicely with generic packs and will
+	-- cause lots of false positive errors, so use the @Typecheck:Partial type
+	-- definition to fix that. Otherwise, if using the new solver you should be
+	-- able to use @Typecheck:Full.
+	--
+	--[[ @Typecheck:Full
 	Remove: <T...>(Maid: Maid, T...)->(T...);
+	Add: <T...>(Maid: Maid, T...)->(T...);
+	AddCall: <T...>(Maid: Maid, Function: (T...)->(), T...)->(MaidCall<T...>);
+	--]]
+	---[[ @Typecheck:Partial
+	Remove: (Maid: Maid, ...any)->(...any);
+	Add: (Maid: Maid, ...any)->(...any);
+	AddCall: (Maid: Maid, Function: (...any)->(), ...any)->(MaidCall<any>);
+	--]]
 
 	-- Creates a new, unrelated Maid. Equivalent to `Module.MaidNew()`.
 	New: (_: any)->();
@@ -652,8 +732,8 @@ export type Maid = {
 	Push: (Parent: Maid)->(Maid);
 
 	-- Call this on the child! Updates the parent of the child maid, and will
-	-- never affect the child's lifetime. Returns the previous parent, if there
-	-- was one.
+	-- never clean up the child maid. Returns the previous parent, if there was
+	-- one.
 	--
 	-- Remove from a parent: `child:SetParent(nil)`.
 	-- Set a new parent: `child:SetParent(parent)`.
@@ -665,16 +745,14 @@ export type Maid = {
 	SetParent: (Child: Maid, Parent: Maid?)->(Maid?);
 }
 do
-	local MaidMeta: Maid =
+	local MaidCallMeta: MaidCall<any> =
 		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
-
-	function MaidMeta.Add<T...>(Maid: Maid, ...: T...): (T...)
-		for Index = 1, select("#", ...) do
-			Maid.MaidValues[#Maid.MaidValues+1] = select(Index, ...)
-		end
-		return ...
+	function MaidCallMeta.Destroy(MaidCall: MaidCall<any>)
+		MaidCall.Function(table.unpack(MaidCall.Args))
 	end
 
+	local MaidMeta: Maid =
+		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
 	function MaidMeta.Remove<T...>(Maid: Maid, ...: T...): (T...)
 		for Index = 1, select("#", ...) do
 			local ValueIndex = table.find(Maid.MaidValues, select(Index, ...))
@@ -683,6 +761,26 @@ do
 			end
 		end
 		return ...
+	end
+	function MaidMeta.Add<T...>(Maid: Maid, ...: T...): (T...)
+		for Index = 1, select("#", ...) do
+			Maid.MaidValues[#Maid.MaidValues+1] = select(Index, ...)
+		end
+		return ...
+	end
+	function MaidMeta.AddCall<T...>(Maid: Maid, Function: (T...)->(), ...: T...): MaidCall<T...>
+		if type(Function) ~= "function" then
+			error("Maid:AddCall() first argument was not a function!")
+		end
+		local MaidCall: MaidCall<T...> = setmetatable({
+			Function = Function;
+			-- This is a dumb way to pack the variadic arguments, but it's
+			-- necessary to silence the typechecker. (And table.pack() adds
+			-- extra fields.)
+			Args = (function(...) return {...} end)(...);
+		} :: MaidCall<T...>, MaidCallMeta) :: any
+		Maid.MaidValues[#Maid.MaidValues+1] = MaidCall
+		return MaidCall
 	end
 
 	local function MaidCleanRecursive(Maid: Maid)
@@ -701,7 +799,7 @@ do
 			elseif type(Value) == "thread" then
 				coroutine.close(Value)
 			elseif type(Value) == "function" then
-				task.spawn(Value)
+				Value()
 			elseif type(Value) == "table" then
 				if type((Value :: Maid).MaidValues) == "table" then
 					local ValueMaid = Value :: Maid
@@ -722,13 +820,19 @@ do
 							ValueMaid.MaidParent = nil
 						end
 					end
-					MaidCleanRecursive(Maid)
+					MaidCleanRecursive(ValueMaid)
+				elseif type((Value :: HasMaidClean<any>).MaidClean) == "function" then
+					(Value :: HasMaidClean<any>):MaidClean()
 				elseif type((Value :: HasDestroy<any>).Destroy) == "function" then
 					(Value :: HasDestroy<any>):Destroy()
+				elseif type((Value :: HasDestroy<any>).destroy) == "function" then
+					(Value :: HasDestroy<any>):destroy()
 				elseif type((Value :: HasDisconnect<any>).Disconnect) == "function" then
 					(Value :: HasDisconnect<any>):Disconnect()
+				elseif type((Value :: HasDisconnectLower<any>).disconnect) == "function" then
+					(Value :: HasDestroy<any>):disconnect()
 				else
-					warn(debug.traceback("Table found in Maid was not another Maid and did not have a Destroy or Disconnect method."))
+					warn(debug.traceback("Table found in Maid was not another Maid and did not have a Destroy, Disconnect, or MaidClean method."))
 				end
 			end
 		end
@@ -758,7 +862,7 @@ do
 	end
 	MaidMeta.Destroy = MaidMeta.Clean
 
-	function MaidMeta.Reset(Maid: Maid)
+	function MaidMeta.Refresh(Maid: Maid)
 		debug.profilebegin("MaidClean")
 		MaidCleanRecursive(Maid)
 		debug.profileend()
@@ -957,6 +1061,120 @@ do
 	end
 end
 
+-- Signal
+--
+-- Basic signal implementation.
+--
+export type SignalCallback = (Connection: SignalConnection, ...any)->()
+export type SignalConnection = {
+	Signal: Signal;
+	Connected: boolean;
+	Callback: SignalCallback;
+	DeferredThreads: {thread}?;
+
+	Destroy: (Connection: SignalConnection)->();
+	Disconnect: (Connection: SignalConnection)->();
+}
+export type Signal = {
+	Connections: {SignalConnection};
+
+	Destroy: (Signal: Signal)->();
+	Fire: (Signal: Signal, ...any)->();
+
+	-- Callbacks bound using Signal:Connect() will be called directly
+	Connect: (Signal: Signal, Callback: SignalCallback)->(SignalConnection);
+
+	-- Callbacks bound using Signal:ConnectSpawn() will be spawned as a separate
+	-- thread.
+	ConnectSpawn: (Signal: Signal, Callback: SignalCallback)->(SignalConnection);
+
+	-- Callbacks bound using Signal:ConnectDefer() will be called using
+	-- task.defer() and will be cancelled if the connection or signal is
+	-- destroyed/disconnected up before it runs, but will not be deduplicated if
+	-- the signal is fired numerous times before the first callback runs.
+	ConnectDefer: (Signal: Signal, Callback: SignalCallback)->(SignalConnection);
+}
+do
+	local ConnectionMeta: SignalConnection =
+		(function(): any local c = {}; c.__index = c; return c end)()
+	function ConnectionMeta.Disconnect<T>(Connection: SignalConnection)
+		if Connection.Connected then
+			Connection.Connected = false
+			local Array = Connection.Signal.Connections
+			local Index = table.find(Array, Connection)
+			if Index then
+				table.remove(Array, Index)
+			end
+			if Connection.DeferredThreads then
+				for _, Thread in Connection.DeferredThreads do
+					coroutine.close(Thread)
+				end
+				Connection.DeferredThreads = nil
+			end
+		end
+	end
+	ConnectionMeta.Destroy = ConnectionMeta.Disconnect
+
+	local SignalMeta: Signal =
+		(function(): any local c = {}; c.__index = c; return c end)()
+	function SignalMeta.Fire<T>(Signal: Signal, ...)
+		local Connections = table.clone(Signal.Connections)
+		for Index = #Connections, 1, -1 do
+			local Connection = Connections[Index]
+			if Connection.Connected then
+				Connection:Callback(...)
+			end
+		end
+	end
+	function SignalMeta.Connect(Signal: Signal, Callback: SignalCallback): SignalConnection
+		local Connection: SignalConnection = setmetatable({
+			Signal = Signal;
+			Connected = true;
+			Callback = Callback;
+		}, ConnectionMeta) :: any
+		Signal.Connections[#Signal.Connections+1] = Connection
+		return Connection
+	end
+	function SignalMeta.ConnectSpawn(Signal: Signal, Callback: SignalCallback): SignalConnection
+		return Signal:Connect(function(...)
+			task.spawn(Callback, ...)
+		end)
+	end
+	local function DeferredConnection(Connection: SignalConnection, ...)
+		if Connection.DeferredThreads then
+			local Index = table.find(Connection.DeferredThreads, coroutine.running())
+			if Index then
+				table.remove(Connection.DeferredThreads, Index)
+			end
+		end
+		Connection:Callback(...)
+	end
+	function SignalMeta.ConnectDefer(
+		Signal: Signal, Callback: SignalCallback
+	): SignalConnection
+		return Signal:Connect(function(Connection, ...)
+			local Array = Connection.DeferredThreads or {}
+			Array[#Array+1] = task.defer(DeferredConnection, Connection, ...)
+			Connection.DeferredThreads = Array
+		end)
+	end
+	function SignalMeta.Destroy<T...>(Signal: Signal)
+		for _, Connection in Signal.Connections do
+			Connection.Connected = false
+			if Connection.DeferredThreads then
+				for _, Thread in Connection.DeferredThreads do
+					coroutine.close(Thread)
+				end
+				Connection.DeferredThreads = nil
+			end
+		end
+		table.clear(Signal.Connections)
+	end
+	function Module.SignalNew(): Signal
+		return setmetatable({Connections = {};}, SignalMeta) :: any
+	end
+end
+
 --
 -- Doubly Linked List
 --
@@ -966,11 +1184,11 @@ local DLL_Current = DLL_Sentinel.DLL_Next
 while DLL_Current ~= DLL_Sentinel do
 	local Element = DLL_Current
 	DLL_Current = DLL_Current.DLL_Next
-	
-	-- It is safe to remove elements after the Current pointer has been moved to 
+
+	-- It is safe to remove elements after the Current pointer has been moved to
 	-- the next node.
 	DLL_Remove(Element)
-	
+
 	-- Do other stuff with Element here.
 end
 --]]
@@ -980,51 +1198,90 @@ export type DLL_Node<T> = T & {
 	DLL_Prev: DLL_Node<T>;
 }
 function Module.DLL_Create<T>(): DLL_Node<T>
-	local DLL = {} :: DLL_Node<T>
-	DLL.DLL_Sentinel = DLL
-	DLL.DLL_Next = DLL
-	DLL.DLL_Prev = DLL
-	return DLL
+	local Sentinel = {} :: DLL_Node<T>
+	Sentinel.DLL_Sentinel = Sentinel
+	Sentinel.DLL_Next = Sentinel
+	Sentinel.DLL_Prev = Sentinel
+	return Sentinel
 end
-function Module.DLL_ClearSentinelReferences<T>(DLL: DLL_Node<T>)
-	local Current = DLL.DLL_Next
-	while Current ~= DLL do
-		Current.DLL_Sentinel = nil :: any
+
+-- Replaces the sentinel of all the items in the list with a new value. Can be
+-- used to clear the sentinel reference if the replacement is nil. Neither sentinel
+-- nodes themselves will ever be modified.
+function Module.DLL_ReplaceSentinel<T>(Sentinel: DLL_Node<T>, Replacement: DLL_Node<T>?)
+	local Current = Sentinel.DLL_Next
+	while Current ~= Sentinel do
+		Current.DLL_Sentinel = Replacement :: DLL_Node<T>
 		Current = Current.DLL_Next
 	end
 end
-function Module.DLL_ClearLinks<T>(DLL: DLL_Node<T>)
-	DLL.DLL_Next = DLL
-	DLL.DLL_Prev = DLL
+-- Fast way to reset the list, relying on the garbage collector to clean up
+-- the items in the list.
+function Module.DLL_SentinelQuickReset<T>(Sentinel: DLL_Node<T>)
+	Sentinel.DLL_Next = Sentinel
+	Sentinel.DLL_Prev = Sentinel
 end
-function Module.DLL_Append<T>(DLL: DLL_Node<T>, Node: DLL_Node<T>)
-	Node.DLL_Sentinel = DLL
-	Node.DLL_Next = DLL
-	Node.DLL_Prev = DLL.DLL_Prev
+-- Transfers all the items in the From list to the To list. The items will be
+-- append to the end of the of the existing items in the To list.
+function Module.DLL_Transfer<T>(SentinelFrom: DLL_Node<T>, SentinelTo: DLL_Node<T>)
+	if SentinelFrom.DLL_Next ~= SentinelFrom then
 
-	DLL.DLL_Prev.DLL_Next = Node
-	DLL.DLL_Prev = Node
+		local First = SentinelFrom.DLL_Next
+		local Last = SentinelFrom.DLL_Prev
+
+		Module.DLL_ReplaceSentinel(SentinelFrom, SentinelTo)
+		Module.DLL_SentinelQuickReset(SentinelFrom)
+
+		First.DLL_Prev = SentinelTo.DLL_Prev
+		Last.DLL_Next = SentinelTo
+
+		SentinelTo.DLL_Prev.DLL_Next = First
+		SentinelTo.DLL_Prev = Last
+	end
 end
-function Module.DLL_AppendFirst<T>(DLL: DLL_Node<T>, Node: DLL_Node<T>)
-	Node.DLL_Sentinel = DLL.DLL_Sentinel
-	Node.DLL_Next = DLL.DLL_Next
-	Node.DLL_Prev = DLL
-	
-	DLL.DLL_Next.DLL_Prev = Node
-	DLL.DLL_Next = Node
+
+-- Append a node after the given item in the list.
+function Module.DLL_AppendAfter<T>(Item: DLL_Node<T>, Node: DLL_Node<T>)
+	Node.DLL_Sentinel = Item.DLL_Sentinel
+
+	Node.DLL_Next = Item.DLL_Next
+	Node.DLL_Prev = Item
+
+	Item.DLL_Next.DLL_Prev = Node
+	Item.DLL_Next = Node
 end
-function Module.DLL_IsInside<T>(DLL: DLL_Node<T>, Node: DLL_Node<T>): boolean
-	return Node.DLL_Sentinel == DLL
+-- Append a node before the given item in the list.
+function Module.DLL_AppendBefore<T>(Item: DLL_Node<T>, Node: DLL_Node<T>)
+	Module.DLL_AppendAfter(Item.DLL_Prev, Node)
 end
+-- Append a node as the first item in the list using the sentinel.
+function Module.DLL_SentinelAppendFirst<T>(Sentinel: DLL_Node<T>, Node: DLL_Node<T>)
+	Module.DLL_AppendAfter(Sentinel, Node)
+end
+-- Append a node as the last item in the list using the sentinel.
+function Module.DLL_SentinelAppendLast<T>(Sentinel: DLL_Node<T>, Node: DLL_Node<T>)
+	Module.DLL_AppendBefore(Sentinel.DLL_Prev, Node)
+end
+
+-- Returns true if the nodes are inside the same list. Can take sentinels too.
+function Module.DLL_AreLinked<T>(A: DLL_Node<T>, B: DLL_Node<T>): boolean
+	return A.DLL_Sentinel == B.DLL_Sentinel
+end
+-- Returns true if the node is the sentinel of the list.
 function Module.DLL_IsSentinel<T>(Node: DLL_Node<T>): boolean
 	return Node.DLL_Sentinel == Node
 end
-function Module.DLL_Remove<T>(Node: DLL_Node<T>)
-	if Node.DLL_Sentinel then
+
+-- Removes the node from any list it is in, and returns the sentinel of the list
+-- it was removed from.
+function Module.DLL_Remove<T>(Node: DLL_Node<T>): DLL_Node<T>?
+	local Sentinel = Node.DLL_Sentinel
+	if Sentinel then
 		Node.DLL_Sentinel = nil :: any
 		Node.DLL_Next.DLL_Prev = Node.DLL_Prev
 		Node.DLL_Prev.DLL_Next = Node.DLL_Next
 	end
+	return Sentinel
 end
 
 --
@@ -1037,7 +1294,7 @@ end
 -- Also allows keybindings to be dynamically changed by providing a completely
 -- new table of inputs. If using CAM:SetInputs(), this is done just by
 -- providing the Inputs argument. If using CAM:SetBound(), this is done by
--- replacing the CAM.Inputs field.
+-- replacing the CAM.InputsToBind field.
 --
 -- Examples:
 --[[
@@ -1096,8 +1353,8 @@ export type ContextActionMulti = {
 	-- CAM:SetBound() to set bind/unbind these inputs.
 	InputsToBind: {Enum.KeyCode|Enum.UserInputType}?;
 	--
-	-- Only works with CAMs created via CAMS_NewBound, or which have the Inputs
-	-- field set.
+	-- Only works with CAMs created via CAMS_NewBound, or which have the
+	-- InputsToBind field set.
 	SetBound: (CAM: ContextActionMulti, Bound: boolean)->(ContextActionMulti);
 
 	-- Clean up.
@@ -1166,7 +1423,7 @@ do
 
 		assert(type(Name) == "string", "CAM_NewBound(): Name must be a string")
 		assert(type(Priority) == "number", "CAM_NewBound(): Priority must be a number")
-		assert(type(InputsToBind) == "table", "CAM_NewBound(): Inputs to bind must be a table")
+		assert(type(InputsToBind) == "table", "CAM_NewBound(): InputsToBind must be a table")
 		assert(type(Action) == "function", "CAM_NewBound(): Action must be a function")
 
 		return setmetatable({
@@ -1177,7 +1434,9 @@ do
 		}, CAMMeta) :: any
 	end
 	function CAMMeta.SetBound(CAM: ContextActionMulti, Bound: boolean)
-		assert(CAM.InputsToBind, "CAM:SetBound(): CAM is missing InputsToBind field. Did you forget to call CAM_NewBound()?")
+		if not CAM.InputsToBind then
+			warn(debug.traceback("CAM:SetBound(): CAM is missing InputsToBind field. Did you forget to call CAM_NewBound()?"))
+		end
 		return CAM:SetInputs(if Bound then CAM.InputsToBind else nil)
 	end
 end
