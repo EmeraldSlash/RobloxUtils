@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 8 (2025-11-14)
+-- Version 9 (2025-11-16)
 --
 
 --
@@ -141,6 +141,15 @@
 -- Cache:AddArray()
 -- Cache:Mark()
 --
+-- type Anim
+-- .AnimNew()
+-- Anim:Aim()
+-- Anim:Compute()
+-- Anim:Consume()
+-- Anim:Eval()
+-- Anim:SetDuration()
+-- Anim:SetEaseDir()
+-- Anim:SetEaseStyle()
 
 local Module = {}
 
@@ -454,36 +463,36 @@ Storage.Array = Module.WeakArrayAppendOnce(Storage.Array, Value)
 Storage.Array = Module.WeakArrayRemove(Storage.Array, Value)
 --]]
 function Module.WeakArrayAppend<T>(Array: {T}?, Value: T): {T}?
-   if Value ~= nil then
-      if not Array then
-         Array = {Value}
-      else
-         Array[#Array+1] = Value
-      end
-   end
-   return Array
+	if Value ~= nil then
+		if not Array then
+			Array = {Value}
+		else
+			Array[#Array+1] = Value
+		end
+	end
+	return Array
 end
 function Module.WeakArrayAppendOnce<T>(Array: {T}?, Value: T): {T}?
-   if Value ~= nil then
-      if not Array then
-         Array = {Value}
-      elseif not table.find(Array, Value) then
-         Array[#Array+1] = Value
-      end
-   end
-   return Array
+	if Value ~= nil then
+		if not Array then
+			Array = {Value}
+		elseif not table.find(Array, Value) then
+			Array[#Array+1] = Value
+		end
+	end
+	return Array
 end
 function Module.WeakArrayRemove<T>(Array: {T}?, Value: T): {T}?
-   if Array then
-      local Index = table.find(Array, Value)
-      if Index then
-         table.remove(Array, Index)
-         if not Array[1] then
-            Array = nil
-         end
-      end
-   end
-   return Array
+	if Array then
+		local Index = table.find(Array, Value)
+		if Index then
+			table.remove(Array, Index)
+			if not Array[1] then
+				Array = nil
+			end
+		end
+	end
+	return Array
 end
 
 --
@@ -1654,6 +1663,146 @@ do
 		end
 		Cache.Dirty = Cache.DirtySoFar or (Cache.CurrCount ~= Cache.PrevCount)
 		return JustDirty
+	end
+end
+
+-- Anim
+--
+-- Helper for immediate-mode evaluated animations. Designed for chained usage.
+--
+-- Simple usage. If animation begins during this call, then after this call
+-- Anim.Value will be closer to the target value than the start value.
+--[[
+Anim:Eval(Delta, Target)
+print(Anim.Value, Anim.Dirty)
+--]]
+-- Change easing style based on target. Same caveat about Anim.Value being
+-- closer to the target value after all this code has run.
+--[[
+Anim
+	:SetEaseDir(if Target > 0.5 then Enum.EasingStyle.In else Enum.EasingStyle.Out)
+	:Aim(Target) -- Set new animation target.
+	:Compute(Delta) -- Start going there immediately.
+	:Consume() -- Write to Anim.Dirty.
+	--]]
+-- This is the same as above, but this time the previous animation will be
+-- evaluated using this frame's delta time (and using the previous easing style),
+-- then the new animation to target will be at the previous animation's value
+-- for this frame.
+--[[
+Anim
+	:Compute(Delta) -- Update previous animation.
+	:SetEaseDir(if Target > 0.5 then Enum.EasingStyle.In else Enum.EasingStyle.Out)
+	:Aim(Target) -- Set new animation target.
+	:Consume() -- Write to Anim.Dirty.
+--]]
+--
+-- Here's how you can run the animation with constant speed. I recommend you use
+-- linear (or no) easing style. The animation's Duration setting will be
+-- interpreted as the speed of the animation in units per second.
+--[[
+Anim:Aim(Target):Compute(Delta, true)
+--]]
+--
+export type Anim = {
+	-- current value of the animation
+	Value: number;
+	Dirty: boolean; -- Set only when using Anim:Consume()
+
+	-- internal state
+	Duration: number;
+	Start: number;
+	Target: number;
+	Elapsed: number?; -- only set when an animation is active
+	EaseStyle: Enum.EasingStyle?;
+	EaseDir: Enum.EasingDirection?;
+	Cached_Value: number?;
+
+	-- methods
+	Aim: (Anim: Anim, Target: number)->(Anim);
+	Compute: (Anim: Anim, Delta: number)->(Anim);
+	Consume: (Anim: Anim)->(Anim);
+	Eval: (Anim: Anim, Delta: number, Target: number)->(Anim);
+	SetDuration: (Anim: Anim, Duration: number)->(Anim);
+	SetEaseStyle: (Anim: Anim, EaseStyle: Enum.EasingStyle?)->(Anim);
+	SetEaseDir: (Anim: Anim, EaseDir: Enum.EasingDirection?)->(Anim);
+}
+do
+	local TweenService = game:GetService("TweenService")
+	local TweenService_GetValue = TweenService.GetValue
+
+	local AnimMeta: Anim =
+		(function(): any local c = {}; c.__index = c; return c; end)()
+
+	function Module.AnimNew(
+		Duration: number,
+		Value: number?,
+		EaseStyle: Enum.EasingStyle?,
+		EaseDir: Enum.EasingDirection?
+	): Anim
+		return setmetatable({
+			Duration = Duration;
+			Value = Value;
+			Start = Value;
+			Target = Value;
+			EaseStyle = EaseStyle;
+			EaseDir = EaseDir;
+		} :: Anim, AnimMeta) :: any
+	end
+
+	function AnimMeta.Aim(Anim: Anim, Target: number): Anim
+		if Anim.Target ~= Target then
+			Anim.Target = Target
+			Anim.Start = Anim.Value
+			Anim.Elapsed = 0
+		end
+		return Anim
+	end
+	function AnimMeta.Compute(Anim: Anim, Delta: number, ConstantSpeed: boolean?): Anim
+		if Anim.Elapsed then
+			Anim.Elapsed += Delta
+			local Duration =
+				if ConstantSpeed then math.abs(Anim.Target - Anim.Start) / Anim.Duration
+				else Anim.Duration
+			local Progress = Anim.Elapsed / Duration
+			-- The animation will bias towards being complete if duration is 0.
+			if Progress ~= Progress then Progress = 1 end
+			Progress = math.clamp(Progress, 0, 1)
+			if Progress > 0 and Progress < 1 and Anim.EaseStyle then
+				Progress = TweenService_GetValue(TweenService,
+					Progress, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
+			end
+			Anim.Value = math.lerp(Anim.Start, Anim.Target, Progress)
+			if Anim.Value == Anim.Target then
+				Anim.Elapsed = nil
+			end
+		end
+		return Anim
+	end
+	function AnimMeta.Eval(Anim: Anim, Delta: number, Target: number): Anim
+		return Anim:Aim(Target):Compute(Delta):Consume()
+	end
+	function AnimMeta.Consume(Anim: Anim): Anim
+		local Dirty = false
+		if Anim.Cached_Value ~= Anim.Value then
+			Anim.Cached_Value = Anim.Value
+			Dirty = true
+		end
+		Anim.Dirty = Dirty
+		return Anim
+	end
+
+	function AnimMeta.SetDuration(Anim: Anim, Duration: number)
+		Anim.Duration = Duration
+		return Anim
+	end
+	function AnimMeta.SetEaseDir(Anim: Anim, EaseDir: Enum.EasingDirection?)
+		Anim.EaseDir = EaseDir
+		return Anim
+	end
+	function AnimMeta.SetEaseStyle(Anim: Anim, EaseStyle: Enum.EasingStyle?)
+		Anim.EaseStyle = EaseStyle
+		return Anim
 	end
 end
 
