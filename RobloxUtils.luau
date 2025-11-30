@@ -5,16 +5,25 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 9 (2025-11-16)
+-- Version 10 (2025-11-30)
 --
 
 --
 -- API summary:
 --
 -- .RandomSeed()
+-- .IndexFromNumber()
+-- .USin()
+-- .UCos()
+-- .Rebase()
 --
 -- .GetAncestry()
 -- .AncestryLookup()
+--
+-- .SetDescendantCount()
+-- .CheckDescendantCount()
+-- .WaitForDescendantCount()
+-- .BindDescendantCount()
 --
 -- type Props
 -- .PropsMerge()
@@ -66,6 +75,7 @@
 -- .WeakArrayAppend()
 -- .WeakArrayAppendOnce()
 -- .WeakArrayRemove()
+-- .WeakArrayRemoveIndex()
 --
 -- .TableNestedAppend()
 -- .TableNestedRemove()
@@ -73,6 +83,8 @@
 -- .TableFindName()
 -- .TableHas()
 -- .TableDeepCopy()
+--
+-- .MakeRemotes()
 --
 -- type Maid
 -- .MaidNew()
@@ -144,17 +156,54 @@
 -- type Anim
 -- .AnimNew()
 -- Anim:Aim()
+-- Anim:AimFrom()
 -- Anim:Compute()
 -- Anim:Consume()
 -- Anim:Eval()
 -- Anim:SetDuration()
 -- Anim:SetEaseDir()
 -- Anim:SetEaseStyle()
+-- Anim:IsDone()
+--
+-- type GuiStateEye
+-- .GSE_New()
+-- GSE:Destroy()
+--
+-- type TextMetrics
+-- .TextMetricsNew()
+-- TM:Update()
+-- TM:Destroy()
+--
+-- type SafeAreaMetrics
+-- .SafeAreaMetricsNew()
+-- SAM:Update()
+--
+-- type BulkPositioner
+-- .BP_New()
+-- BP:Add()
+-- BP:Offset()
+-- BP:Apply()
+-- BP:Transfer()
+-- BP:Clear()
 
 local Module = {}
 
 function Module.RandomSeed()
 	return math.random(2147483647)
+end
+function Module.IndexFromNumber(ValueFloat: number, MaxIndex: number)
+	return
+		if ValueFloat < 1 or MaxIndex < 1 then 1
+		else math.clamp(math.ceil(ValueFloat / (1/MaxIndex)), 1, MaxIndex)
+end
+function Module.USin(Value)
+	return math.clamp((math.sin(Value)+1)/2, 0, 1)
+end
+function Module.UCos(Value)
+	return math.clamp((math.cos(Value)+1)/2, 0, 1)
+end
+function Module.Rebase(AValue: number, ABase: number, BBase: number): number
+	return (AValue - ABase) + BBase
 end
 
 --
@@ -171,18 +220,77 @@ function Module.GetAncestry(
 	end
 	return Result
 end
-function Module.AncestryLookup<T>(
-	Table: {[any]: T},
+function Module.AncestryLookup<K,V>(
+	Table: {[K]: V},
 	Ancestry: {Instance}
-): T?
-	local Result
+): (V?, K?)
+	local ResultValue: V
+	local ResultKey: K
 	for _, Current in Ancestry do
-		Result = Table[Current]
-		if Result then
+		ResultValue = Table[Current :: any]
+		if ResultValue then
+			ResultKey = Current :: any
 			break
 		end
 	end
-	return Result
+	return ResultValue, ResultKey
+end
+
+--
+-- Descendant replication helpers
+--
+function Module.SetDescendantCount(Object: Instance)
+	Object:SetAttribute("DescendantCount", #Object:GetDescendants())
+end
+function Module.CheckDescendantCount(Object: Instance): boolean
+	local Count = Object:GetAttribute("DescendantCount")
+	return (type(Count) == "number") and (#Object:GetDescendants() >= Count)
+end
+function Module.WaitForDescendantCount(Object: Instance)
+	while true do
+		if Module.CheckDescendantCount(Object) then
+			break
+		end
+		task.wait()
+	end
+end
+function Module.BindDescendantCount(
+	Object: Instance,
+	Callback: ()->(),
+	Maid: Maid?
+): RBXScriptConnection?
+
+	local Completed = false
+	local function CheckAttribute()
+		if Module.CheckDescendantCount(Object) then
+			if not Completed then
+				Completed = true
+				Callback()
+			end
+		end
+		return Completed
+	end
+
+	local Connection: RBXScriptConnection?
+	if not CheckAttribute() then
+		Connection = Object:GetAttributeChangedSignal("DescendantCount"):Connect(function()
+			if Connection and
+				Connection.Connected
+			then
+				if CheckAttribute() then
+					Connection:Disconnect()
+					Connection = nil
+					if Maid then
+						Maid:Remove(Connection)
+					end
+				end
+			end
+		end)
+		if Maid then
+			Maid:Add(Connection)
+		end
+	end
+	return Connection
 end
 
 --
@@ -220,7 +328,7 @@ function Module.I(ClassName: string, ...: Props)
 end
 
 -- Helper function for setting properties on an instance.
-function Module.IPropsApply(Object: Instance, ...: Props): Instance
+function Module.IPropsApply<T>(Object: T, ...: Props): T
 	if select(1, ...) then
 		local Props
 		if not select(2, ...) then
@@ -239,7 +347,7 @@ function Module.IPropsApply(Object: Instance, ...: Props): Instance
 			end
 		end
 		if Props.Parent then
-			Object.Parent = Props.Parent
+			(Object :: any).Parent = Props.Parent
 		end
 	end
 	return Object
@@ -372,13 +480,13 @@ function Module.V3_LerpClamp(A: Vector3, B: Vector3, T: number): Vector3
 	return Module.V3_Lerp(A, B, math.clamp(T, 0, 1))
 end
 function Module.V3_Clamp(V: Vector3, Min: Vector3, Max: Vector3): Vector3
-	return Module.V3_Min(Module.V3_Max(V, Min), Max) 
+	return Module.V3_Min(Module.V3_Max(V, Min), Max)
 end
 function Module.V3_Abs(V: Vector3): Vector3
 	return Module.V3_Max(V, -V)
 end
 function Module.V3_SafeUnit(V: Vector3)
-	return if V ~= Vector3.zero then V.Unit else V 
+	return if V ~= Vector3.zero then V.Unit else V
 end
 
 Module.V3_XZ = Vector3.new(1, 0, 1)
@@ -424,6 +532,42 @@ function Module.V2_Abs(V: Vector2): Vector2
 end
 function Module.V2_SafeUnit(V: Vector2)
 	return if V ~= Vector2.zero then V.Unit else V
+end
+
+--
+-- CFrame
+--
+function Module.CFrame_Vertical(Input: CFrame, Vertical: Vector3): CFrame
+	local YVector = Vertical.Unit
+	local Mask = Vector3.one - YVector
+	local ZVector = Input.ZVector * Mask
+	if ZVector == Vector3.zero then
+		ZVector = -Input.YVector * Mask
+	end
+	ZVector = ZVector.Unit
+	local XVector = YVector:Cross(ZVector)
+	return CFrame.fromMatrix(
+		Input.Position,
+		XVector,
+		YVector,
+		ZVector)
+end
+
+--
+-- Simple Queries
+--
+function Module.IsInBB(
+	BBCFrame: CFrame,
+	BBSize: Vector3,
+	Point: Vector3,
+	PointRadius: number?
+)
+	local Pos = BBCFrame:PointToObjectSpace(Point)
+	local Size = (BBSize*0.5) + (Vector3.one*(PointRadius or 0))
+	return
+		(math.abs(Pos.X) <= (Size.X)) and
+		(math.abs(Pos.Y) <= (Size.Y)) and
+		(math.abs(Pos.Z) <= (Size.Z))
 end
 
 --
@@ -494,10 +638,24 @@ function Module.WeakArrayRemove<T>(Array: {T}?, Value: T): {T}?
 	end
 	return Array
 end
+function Module.WeakArrayRemoveIndex<T>(Array: {T}?, Index: number): {T}?
+	if Array then
+		table.remove(Array, Index)
+		if not Array[1] then
+			Array = nil
+		end
+	end
+	return Array
+end
 
 --
 -- Table Helpers
 --
+function Module.TableCount(Table: {[any]: any}): number
+	local Count = 0
+	for _ in Table do Count += 1 end
+	return Count
+end
 function Module.TableNestedAppend<K,V>(Table: {[K]: {V}}, Key: K, Value: V)
 	local Array = Table[Key]
 	if Array then
@@ -546,6 +704,22 @@ function Module.TableHas<T>(Table: {[T]: any}, Value: any): (boolean, T)
 	end
 	return ResultKey ~= nil, ResultKey
 end
+function Module.TableFindMatch<V, K>(
+	Table: {[K]: V},
+	Filter: (Value: V)->(boolean)
+): (K?, V?)
+	local ResultIndex = nil
+	local ResultValue = nil
+	for Index, Value in Table do
+		if Filter(Value) then
+			ResultIndex = Index
+			ResultValue = Value
+			break
+		end
+	end
+	return ResultIndex, ResultValue
+end
+
 function Module.TableDeepCopy<T>(Table: T): T
 	local Result = {
 		Table = (nil :: any) :: T;
@@ -620,6 +794,75 @@ function Module.TableDeepCopy<T>(Table: T): T
 	end
 
 	return Result.Table
+end
+
+--
+-- Remote creation helper
+--
+-- Use like:
+--[[
+local Remotes = Module.MakeRemotes({
+	ShowExplosionVFX = Module.RemoteServerU;
+	SendDataToClient = Module.RemoteServer;
+	ClientRequestsData = Module.RemoteClient;
+})
+--]]
+Module.Remote = ("R" :: any) :: RemoteEvent
+Module.RemoteU = ("U" :: any) :: UnreliableRemoteEvent
+Module.RemoteServer = ("RFromServer" :: any) :: RemoteEvent
+Module.RemoteClient = ("RFromClient" :: any) :: RemoteEvent
+Module.RemoteServerU = ("RUFromServer" :: any) :: UnreliableRemoteEvent
+Module.RemoteClientU = ("RUFromClient" :: any) :: UnreliableRemoteEvent
+function Module.MakeRemotes<T>(
+	Remotes: T,
+	Parent: Instance?,
+	InvalidCallback: ((Player: Player, Name: string)->())?
+): T
+	local Remotes_Iterable = (Remotes :: any) :: {[string]: any}
+	local Parent_Actual: Instance = Parent or script
+	if game:GetService("RunService"):IsServer() then
+		for Name, Kind in Remotes_Iterable do
+			local RemoteEvent = Instance.new(
+				if Kind == Module.RemoteU or
+					Kind == Module.RemoteServerU or
+					Kind == Module.RemoteClientU
+				then "UnreliableRemoteEvent" else "RemoteEvent")
+			RemoteEvent.Name = Name
+			RemoteEvent.Parent = Parent_Actual
+			Remotes_Iterable[Name] = RemoteEvent
+			if InvalidCallback and
+				(Kind == Module.RemoteServer or Kind == Module.RemoteServerU)
+			then
+				RemoteEvent.OnServerEvent:Connect(function(Player)
+					InvalidCallback(Player, Name)
+				end)
+			end
+		end
+	else
+		for Name in Remotes_Iterable do
+			Remotes_Iterable[Name] = Parent_Actual:WaitForChild(Name)
+		end
+	end
+	setmetatable(Remotes_Iterable, {
+		__index = function(_, Key)
+			warn(("Remote '%s' does not exist.\n%s"):format(
+				Key, debug.traceback(nil, 2)))
+			local Remote: RemoteEvent = {
+				FireServer = function() end;
+				FireClient = function() end;
+				FireAllClients = function() end;
+				OnServerEvent = {
+					Connect = function() return {Disconnect = function() end} end
+				};
+				OnClientEvent = {
+					Connect = function() return {Disconnect = function() end} end
+				};
+			} :: any
+			Remotes_Iterable[Key] = Remote
+			return Remote
+		end,
+	})
+	return Remotes
 end
 
 --
@@ -752,8 +995,29 @@ export type Maid = {
 	-- a time.
 	--
 	SetParent: (Child: Maid, Parent: Maid?)->(Maid?);
+
+	-- Internal values used when MAID_DEBUG_ENABLED is true.
+	DebugName: string;
+	DebugTrace: string;
 }
 do
+	local MAID_DEBUG_ENABLED = false
+	local MAID_DEBUG_PRINT_TRACE = false
+
+	local DebugMaidIdAccumulator = 0
+	local function DebugInfo(Maid: Maid)
+		DebugMaidIdAccumulator += 1
+		local DebugMaidId = DebugMaidIdAccumulator
+		Maid.DebugName = ("maid-%d"):format(DebugMaidId);
+		Maid.DebugTrace = debug.traceback(nil, 2);
+	end
+	local function DebugPrint(Message)
+		if MAID_DEBUG_PRINT_TRACE then
+			Message = debug.traceback(Message, 2)
+		end
+		print(Message)
+	end
+
 	local MaidCallMeta: MaidCall<any> =
 		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
 	function MaidCallMeta.Destroy(MaidCall: MaidCall<any>)
@@ -811,6 +1075,9 @@ do
 				Value()
 			elseif type(Value) == "table" then
 				if type((Value :: Maid).MaidValues) == "table" then
+					if MAID_DEBUG_ENABLED then
+						print("cleaning (recursive) "..Maid.DebugName)
+					end
 					local ValueMaid = Value :: Maid
 					local ValueMaidParent = ValueMaid.MaidParent
 					if ValueMaidParent then
@@ -841,14 +1108,25 @@ do
 				elseif type((Value :: HasDisconnectLower<any>).disconnect) == "function" then
 					(Value :: HasDestroy<any>):disconnect()
 				else
-					warn(debug.traceback("Table found in Maid was not another Maid and did not have a Destroy, Disconnect, or MaidClean method."))
+					local Message = "Table found in Maid was not another Maid and did not have a Destroy, Disconnect, or MaidClean method."
+					if MAID_DEBUG_ENABLED then
+						Message ..= " Involved maid: "..Maid.DebugName
+					end
+					warn(debug.traceback(Message))
 				end
+			elseif MAID_DEBUG_ENABLED then
+				warn(debug.traceback(("Unknown value %s: \"%s\" found in Maid! Make sure you are only adding to the maid values which are capable of being cleaned up. Involved maid: %s")
+					:format(typeof(Value), tostring(Value), Maid.DebugName)))
 			end
 		end
 	end
 
 	function MaidMeta.Clean(Maid: Maid)
 		debug.profilebegin("MaidClean")
+
+		if MAID_DEBUG_ENABLED then
+			DebugPrint("cleaning "..Maid.DebugName)
+		end
 
 		do -- Equivalent to Maid:SetParent(nil).
 			local Parent = Maid.MaidParent
@@ -873,6 +1151,11 @@ do
 
 	function MaidMeta.Refresh(Maid: Maid)
 		debug.profilebegin("MaidClean")
+
+		if MAID_DEBUG_ENABLED then
+			DebugPrint("refreshing "..Maid.DebugName)
+		end
+
 		MaidCleanRecursive(Maid)
 		debug.profileend()
 	end
@@ -882,6 +1165,15 @@ do
 			MaidValues = {};
 			MaidParent = Parent;
 		}, MaidMeta) :: any
+		if MAID_DEBUG_ENABLED then
+			DebugInfo(Child)
+			DebugPrint(table.concat({
+				"pushed ";
+				Child.DebugName;
+				" to ";
+				Parent.DebugName;
+			}))
+		end
 		Parent.MaidValues[#Parent.MaidValues+1] = Child
 		return Child
 	end
@@ -899,20 +1191,40 @@ do
 			if Parent then
 				Parent.MaidValues[#Parent.MaidValues+1] = Child
 			end
+			if MAID_DEBUG_ENABLED then
+				DebugPrint(table.concat({
+					"reparented ";
+					Child.DebugName;
+					" from ";
+					if OldParent then OldParent.DebugName else "<nil>";
+					" to ";
+					if Parent then Parent.DebugName else "<nil>";
+				}))
+			end
 		end
 		return OldParent
 	end
 
 	function MaidMeta.New(_: any): Maid
-		return setmetatable({
+		local Maid = setmetatable({
 			MaidValues = {};
 		}, MaidMeta) :: any
+		if MAID_DEBUG_ENABLED then
+			DebugInfo(Maid)
+			DebugPrint("created "..Maid.DebugName)
+		end
+		return Maid
 	end
 
 	function Module.MaidNew(): Maid
-		return setmetatable({
+		local Maid = setmetatable({
 			MaidValues = {};
 		}, MaidMeta) :: any
+		if MAID_DEBUG_ENABLED then
+			DebugInfo(Maid)
+			DebugPrint("created "..Maid.DebugName)
+		end
+		return Maid
 	end
 end
 
@@ -969,12 +1281,12 @@ CharacterLoadTask = CharacterMaid:Add(
 --
 export type AsyncTask = {
 	-- The thread that is currently tracked by the AsyncTask.
-	-- Empty   : thread == nil                 -> IsActive() == false
-	-- Finished: thread == nil                 -> IsActive() == false
-	-- Failed  : status(thread) == "dead"      -> IsActive() == false
-	-- Running : status(thread) == "running"   -> IsActive() == true
+	-- Empty	: thread == nil					  -> IsActive() == false
+	-- Finished: thread == nil					  -> IsActive() == false
+	-- Failed  : status(thread) == "dead"		-> IsActive() == false
+	-- Running : status(thread) == "running"	-> IsActive() == true
 	-- Yielded : status(thread) == "suspended" -> IsActive() == true
-	-- Normal  : status(thread) == "normal"    -> IsActive() == true
+	-- Normal  : status(thread) == "normal"	 -> IsActive() == true
 	Thread: thread?;
 
 	-- Create a new empty AsyncTask. Equivalent to Module.AsyncTaskNew().
@@ -1720,12 +2032,14 @@ export type Anim = {
 
 	-- methods
 	Aim: (Anim: Anim, Target: number)->(Anim);
+	AimFrom: (Anim: Anim, Target: number, Start: number)->(Anim);
 	Compute: (Anim: Anim, Delta: number)->(Anim);
 	Consume: (Anim: Anim)->(Anim);
 	Eval: (Anim: Anim, Delta: number, Target: number)->(Anim);
 	SetDuration: (Anim: Anim, Duration: number)->(Anim);
 	SetEaseStyle: (Anim: Anim, EaseStyle: Enum.EasingStyle?)->(Anim);
 	SetEaseDir: (Anim: Anim, EaseDir: Enum.EasingDirection?)->(Anim);
+	IsDone: (Anim: Anim, Target: number?)->(boolean);
 }
 do
 	local TweenService = game:GetService("TweenService")
@@ -1735,8 +2049,8 @@ do
 		(function(): any local c = {}; c.__index = c; return c; end)()
 
 	function Module.AnimNew(
-		Duration: number,
 		Value: number?,
+		Duration: number,
 		EaseStyle: Enum.EasingStyle?,
 		EaseDir: Enum.EasingDirection?
 	): Anim
@@ -1753,9 +2067,16 @@ do
 	function AnimMeta.Aim(Anim: Anim, Target: number): Anim
 		if Anim.Target ~= Target then
 			Anim.Target = Target
-			Anim.Start = Anim.Value
-			Anim.Elapsed = 0
+			Anim.Start = Anim.Value or Target
+			Anim.Elapsed = if Anim.Target ~= Anim.Start then 0 else nil
 		end
+		return Anim
+	end
+	function AnimMeta.AimFrom(Anim: Anim, Target: number, Start: number): Anim
+		Anim.Target = Target
+		Anim.Start = Start
+		Anim.Value = Start
+		Anim.Elapsed = if Anim.Target ~= Anim.Start then 0 else nil
 		return Anim
 	end
 	function AnimMeta.Compute(Anim: Anim, Delta: number, ConstantSpeed: boolean?): Anim
@@ -1803,6 +2124,489 @@ do
 	function AnimMeta.SetEaseStyle(Anim: Anim, EaseStyle: Enum.EasingStyle?)
 		Anim.EaseStyle = EaseStyle
 		return Anim
+	end
+	function AnimMeta.IsDone(Anim: Anim, Target: number?)
+		return
+			(Anim.Value == Anim.Target) and
+			((not Target) or (Target == Anim.Target))
+	end
+end
+
+--
+-- GuiStateEye
+--
+-- Watch GuiObject.GuiState and convert into "Hot" and "Act" boolean fields.
+--
+export type GuiStateEye = {
+	GuiState: Enum.GuiState;
+	Hot: boolean;
+	Act: boolean;
+	Dirty: boolean;
+	Conn: RBXScriptConnection;
+	Destroy: (GSE: GuiStateEye)->();
+}
+do
+	local GSEMeta: GuiStateEye =
+		(function(): any local c = {}; c.__index = c; return c; end)()
+
+	function GSEMeta.Destroy(GSE: GuiStateEye)
+		GSE.Conn:Disconnect()
+	end
+
+	function Module.GSE_New(Button: GuiObject): GuiStateEye
+		local GSE: GuiStateEye = setmetatable({
+			-- Fields will be set using the callback.
+		} :: GuiStateEye, GSEMeta) :: any
+
+		local function GuiStateChanged()
+			local New = Button.GuiState
+			if GSE.GuiState ~= New then
+				GSE.GuiState = New
+				GSE.Hot = GSE.GuiState == Enum.GuiState.Hover
+				GSE.Act = GSE.GuiState == Enum.GuiState.Press
+				GSE.Dirty = true
+			end
+		end
+		GSE.Conn = Button:GetPropertyChangedSignal("GuiState"):Connect(GuiStateChanged)
+		GuiStateChanged()
+
+		return GSE
+	end
+end
+
+--
+-- PlayerGui dependencies
+--
+
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local PlayerGui = if LocalPlayer then LocalPlayer:WaitForChild("PlayerGui") else nil
+
+--
+-- Text Metrics
+--
+-- Immediate mode API for querying text frame size. I believe this can be used
+-- server-side, but using fallback fonts is only supported on the client.
+--
+export type TextMetrics = {
+	-- output
+	Dirty: boolean;
+	X: number;
+	Y: number;
+
+	-- specified on init & can be set manually later
+	FontFace: Font;
+	RichText: boolean;
+
+	-- internal cached values
+	C_Text: string;
+	C_TextSize: number;
+	C_FrameSizeX: number;
+	C_FontFace: Font;
+	C_RichText: boolean;
+
+	-- internal fields
+	QueryResult: Vector2?;
+	QueryThread: thread?;
+
+	-- Call this to update the text bounds. Returns true if the bounds are dirty
+	-- since the last update.
+	Update: (TM: TextMetrics, Text: string, TextSize: number, FrameSizeX: number)->(boolean);
+
+	-- Calling this should be unnecessary since the only thing it needs to clean
+	-- up is the GetTextBoundsAsync() call. But this method is provided here for
+	-- completeness anyways.
+	Destroy: (TM: TextMetrics)->();
+}
+do
+	local TMMeta: TextMetrics = (function(): any local c = {}; c.__index = c; return c; end)()
+
+	function Module.TextMetricsNew(FontFace: Font | Enum.Font, RichText: boolean?): TextMetrics
+		if typeof(FontFace) ~= "Font" then
+			if FontFace == Enum.Font.Unknown then
+				error("Enum.Font.Unknown is not valid. Must provide Font object instead.", 2)
+			else
+				FontFace = Font.fromEnum(FontFace :: Enum.Font)
+			end
+		end
+		return setmetatable({
+
+			FontFace = FontFace :: Font;
+			RichText = if RichText then true else false;
+
+			Dirty = true;
+			X = 0;
+			Y = 0;
+
+		} :: TextMetrics, TMMeta) :: any
+	end
+
+	function TMMeta.Destroy(TM: TextMetrics)
+		if TM.QueryThread then
+			coroutine.close(TM.QueryThread)
+			TM.QueryThread = nil
+		end
+	end
+
+	local TextService = game:GetService("TextService")
+	local TextBoundsParams = Instance.new("GetTextBoundsParams")
+	local DummyGui: ScreenGui
+	local DummyLabelRich: TextLabel
+	local DummyLabelNormal: TextLabel
+	do
+		DummyGui = Instance.new("ScreenGui")
+		DummyGui.Name = "TextBoundsGui"
+		DummyGui.IgnoreGuiInset = true
+		DummyGui.ResetOnSpawn = false
+		DummyGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
+		DummyGui.ScreenInsets = Enum.ScreenInsets.None
+
+		-- If this is used on the server, the dummy gui fallback won't work :(
+		DummyGui.Parent = PlayerGui
+
+		DummyLabelRich = Instance.new("TextLabel")
+		DummyLabelRich.RichText = true;
+		DummyLabelRich.TextWrapped = true;
+		DummyLabelRich.Interactable = false;
+		DummyLabelRich.Size = UDim2.fromScale(1, 1);
+		DummyLabelRich.Position = UDim2.fromScale(-100, -100);
+			-- If this is queried with FrameSizeX == math.huge, or an equivalently
+			-- large value, the label will have infinite or very large size, and so
+			-- therefore may cover the entire screen. So we have to fix this by making
+			-- the label's background transparent.
+		DummyLabelRich.BackgroundTransparency = 1;
+		DummyLabelRich.Parent = DummyGui;
+
+		DummyLabelNormal = DummyLabelRich:Clone()
+		DummyLabelNormal.Parent = DummyGui;
+		DummyLabelNormal.RichText = false;
+	end
+
+	function TMMeta.Update(
+		TM: TextMetrics,
+		Text: string,
+		TextSize: number,
+		FrameSizeX: number
+	): boolean
+
+		-- Need to clamp frame sizes since UDim2's offset range is 32-bit int.
+		-- It's signed, so while negative values are valid, they aren't useful.
+		FrameSizeX = math.clamp(FrameSizeX, 0, 2147483647)
+
+		local BoundsToUpdate: Vector2?
+
+		-- Consume the results from any previously completed queries.
+		local Bounds = TM.QueryResult
+		if Bounds then
+			TM.QueryResult = nil
+			BoundsToUpdate = Bounds
+		end
+
+		-- Begin a new query if something changes.
+		if (TM.C_Text ~= Text) or
+			(TM.C_TextSize ~= TextSize) or
+			(TM.C_FrameSizeX ~= FrameSizeX) or
+			(TM.C_FontFace ~= TM.FontFace) or
+			(TM.C_RichText ~= TM.RichText)
+		then
+			TM.C_Text = Text
+			TM.C_TextSize = TextSize
+			TM.C_FrameSizeX = FrameSizeX
+			TM.C_FontFace = TM.FontFace
+			TM.C_RichText = TM.RichText
+
+			TextBoundsParams.Font = TM.FontFace
+			TextBoundsParams.RichText = if TM.RichText then true else false
+			TextBoundsParams.Size = TextSize
+			TextBoundsParams.Text = Text
+			TextBoundsParams.Width = FrameSizeX
+
+			do
+				local PrevThread = TM.QueryThread
+				if PrevThread then
+					coroutine.close(PrevThread)
+					TM.QueryThread = nil
+				end
+			end
+
+			TM.QueryThread = coroutine.create(function()
+				TM.QueryResult =
+					TextService:GetTextBoundsAsync(TextBoundsParams)
+				TM.QueryThread = nil
+			end)
+			task.spawn(TM.QueryThread :: thread)
+
+			-- Consume the results from the query if it completed immediately.
+			local Bounds = TM.QueryResult
+			if Bounds then
+				TM.QueryResult = nil
+				BoundsToUpdate = Bounds
+
+			-- If the bounds query did not complete immediately then we have to wait
+			-- for it, and in the meantime we will query a TextLabel's fallback font
+			-- to get the bounds of what will be rendered.
+			else
+				local DummyLabel =
+					if TM.RichText then DummyLabelRich else DummyLabelNormal
+				DummyLabel.FontFace = TM.FontFace
+				DummyLabel.Text = Text
+				DummyLabel.TextSize = TextSize
+				DummyLabel.Size = UDim2.fromOffset(FrameSizeX, math.huge)
+				BoundsToUpdate = DummyLabel.TextBounds
+			end
+		end
+
+		local Dirty = false
+		if BoundsToUpdate then
+			local BX = math.ceil(BoundsToUpdate.X)
+			local BY = math.ceil(BoundsToUpdate.Y)
+			if (TM.X ~= BX) or
+				(TM.Y ~= BY)
+			then
+				TM.X = BX
+				TM.Y = BY
+				Dirty = true
+			end
+		end
+
+		TM.Dirty = true
+		return Dirty
+	end
+end
+
+--
+-- Safe Area Metrics
+--
+--
+-- SAM is used to get the size & position of all the different ScreenInsets. To
+-- avoid redundant work, it is recommended that you only create a single SAM,
+-- update it every frame, and store it in a place where the rest of your UI
+-- code can access it. Use only on the client.
+--
+export type SafeAreaMetrics = {
+	Dirty: boolean;
+
+	-- Fullscreen
+	FSize: Vector2;
+	FPos: Vector2;
+
+	-- DeviceAreaSafe
+	DSize: Vector2;
+	DPos: Vector2;
+
+	-- CoreUISafe
+	CSize: Vector2;
+	CPos: Vector2;
+
+	-- TopbarSafe
+	TSize: Vector2;
+	TPos: Vector2;
+
+	-- Call this to update the safe area metrics.
+	Update: (SafeAreaMetrics)->(boolean);
+
+	-- Use this obtain the rect of safe area B inside safe area A. Usage
+	-- example: a Respecting the Core UI safe area when using a ScreenGui of the
+	-- Fullscreen safe area.
+	BRectInASpace: (SAM: SafeAreaMetrics, APos: Vector2, BPos: Vector2, BSize: Vector2)->(Vector2, Vector2);
+}
+do
+	local SG_C = Instance.new("ScreenGui")
+	SG_C.Name = "SAC_CoreUISafeArea"
+	SG_C.Parent = PlayerGui
+	SG_C.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
+
+	local SG_D = Instance.new("ScreenGui")
+	SG_D.Name = "SAC_DeviceSafeArea"
+	SG_D.Parent = PlayerGui
+	SG_D.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+
+	local SG_F = Instance.new("ScreenGui")
+	SG_F.Name = "SAC_Fullscreen"
+	SG_F.Parent = PlayerGui
+	SG_F.ScreenInsets = Enum.ScreenInsets.None
+
+	local SG_T = Instance.new("ScreenGui")
+	SG_T.Name = "SAC_Topbar"
+	SG_T.Parent = PlayerGui
+	SG_T.ScreenInsets = Enum.ScreenInsets.TopbarSafeInsets
+
+	local SAMMeta: SafeAreaMetrics = (function(): any local c = {}; c.__index = c; return c; end)()
+
+	function Module.SafeAreaMetricsNew(): SafeAreaMetrics
+		return setmetatable({
+
+			Dirty = true;
+
+			CSize = Vector2.zero;
+			CPos = Vector2.zero;
+
+			DSize = Vector2.zero;
+			DPos = Vector2.zero;
+
+			FSize = Vector2.zero;
+			FPos = Vector2.zero;
+
+			TSize = Vector2.zero;
+			TPos = Vector2.zero;
+
+		} :: SafeAreaMetrics, SAMMeta) :: any
+	end
+
+	function SAMMeta.BRectInASpace(_, APos, BPos, BSize): (Vector2, Vector2)
+		local TopLeft = BPos - APos
+		return TopLeft, TopLeft + BSize
+	end
+
+	function SAMMeta.Update(
+		SAM: SafeAreaMetrics
+	): boolean
+
+		local CSize = SG_C.AbsoluteSize
+		local CPos = SG_C.AbsolutePosition
+
+		local DSize = SG_D.AbsoluteSize
+		local DPos = SG_D.AbsolutePosition
+
+		local FSize = SG_F.AbsoluteSize
+		local FPos = SG_F.AbsolutePosition
+
+		local TSize = SG_T.AbsoluteSize
+		local TPos = SG_T.AbsolutePosition
+
+		local Dirty = false
+
+		if SAM.FSize ~= FSize or
+			SAM.FPos ~= FPos or
+			SAM.DSize ~= DSize or
+			SAM.DPos ~= DPos or
+			SAM.CSize ~= CSize or
+			SAM.CPos ~= CPos or
+			SAM.TSize ~= TSize or
+			SAM.TPos ~= TPos
+		then
+			SAM.FSize = FSize
+			SAM.FPos = FPos
+			SAM.DSize = DSize
+			SAM.DPos = DPos
+			SAM.CSize = CSize
+			SAM.CPos = CPos
+			SAM.TSize = TSize
+			SAM.TPos = TPos
+
+			Dirty = true
+		end
+
+		SAM.Dirty = Dirty
+
+		return Dirty
+	end
+end
+
+--
+-- Bulk Positioner
+--
+
+-- This API is useful for keeping UI code running in a single pass when doing
+-- non-trivial object positioning (e.g. centering objects). It is in fact
+-- impossible to do such positioning within a single pass without helpers,
+-- because the position of all the objects depends on the total bounds of all
+-- the objects in their positions relative to each other.
+
+-- Usually to achieve such positioning in a single pass you would create a
+-- container frame, position all of its children, then position the container
+-- frame. But this is annoying because it requires maintaining an additional
+-- instance for every such container. (Alternatively, one could precompute the
+-- size of everything to get the total size, but this requires manual upkeep and
+-- possibly layout code duplication, so is obviously undesirable.)
+
+-- This API solves the issue by creating a temporary fake container (BP_New)
+-- with object positions defined relative to the container in the first pass
+-- (BP:Add() for each object), then once finished you can easily set the
+-- objects' final positions by applying the fake container's position
+-- (BP:Apply(), a second pass turned into a convenient function call).
+--
+-- Also note that tables (rather than GuiObjects) can be passed in to the API,
+-- so the objects being positioned can be fake as well. The fake objects'
+-- Position field will remain unset until BP:Apply() is called. But generally the
+-- use of fake objects should be unnecessary, as most of the time you can just
+-- add each of the real objects independently since they will all be transformed
+-- uniformly by BP:Apply().
+--
+-- Example of centering objects vertically:
+--
+--[[
+local BP = Module.BP_New()
+local PosY = 0
+
+BP:Add(Object1, UDim2.fromOffset(0, PosY))
+PosY += Object1SizeY
+
+BP:Add(Object2, UDim2.fromOffset(0, PosY))
+PosY += Object2SizeY
+
+BP:Apply(UDim2.fromOffset(0, ScreenSizeY*0.5 - PosY*0.5))
+--]]
+
+export type BulkPositioner = {
+	Count: number;
+	GuiObjects: {{Position: UDim2}};
+	Positions: {UDim2};
+
+	-- All methods can be chained.
+	Add: (BP: BulkPositioner, GuiObject: GuiObject | {Position: UDim2}, Position: UDim2)->(BulkPositioner);
+	Offset: (BP: BulkPositioner, Offset: UDim2)->(BulkPositioner);
+	Apply: (BP: BulkPositioner, Offset: UDim2)->(BulkPositioner);
+	SendTo: (Source: BulkPositioner, Dest: BulkPositioner)->(BulkPositioner);
+	Clear: (BP: BulkPositioner)->(BulkPositioner);
+}
+do
+	local BPMeta: BulkPositioner = (function(): any local c = {}; c.__index = c; return c; end)()
+
+	function Module.BP_New(): BulkPositioner
+		return setmetatable({
+			Count = 0;
+			GuiObjects = {};
+			Positions = {};
+		} :: BulkPositioner, BPMeta) :: any
+	end
+	-- Add an object to the bulk positioner.
+	function BPMeta.Add(
+		BP: BulkPositioner,
+		GuiObject: GuiObject | {Position: UDim2},
+		Position: UDim2
+	): BulkPositioner
+		BP.Count += 1
+		BP.GuiObjects[BP.Count] = GuiObject :: any
+		BP.Positions[BP.Count] = Position
+		return BP
+	end
+	-- Adds an offset to internally stored positions. (Useful for intermediate BPs).
+	function BPMeta.Offset(BP: BulkPositioner, Offset: UDim2): BulkPositioner
+		for Index, GuiObject in BP.GuiObjects do
+			BP.Positions[Index] += Offset
+		end
+		return BP
+	end
+	-- Applies offset to the output GuiObjects.
+	function BPMeta.Apply(BP: BulkPositioner, Offset: UDim2): BulkPositioner
+		for Index, GuiObject in BP.GuiObjects do
+			GuiObject.Position = BP.Positions[Index] + Offset
+		end
+		return BP
+	end
+	-- Copies stored positions into another BP.
+	function BPMeta.SendTo(BP: BulkPositioner, DestBP: BulkPositioner): BulkPositioner
+		table.move(BP.GuiObjects, 1, BP.Count, DestBP.Count+1, DestBP.GuiObjects)
+		table.move(BP.Positions, 1, BP.Count, DestBP.Count+1, DestBP.Positions)
+		DestBP.Count += BP.Count
+		return BP
+	end
+	-- Reset the BP.
+	function BPMeta.Clear(BP: BulkPositioner): BulkPositioner
+		BP.Count = 0
+		table.clear(BP.GuiObjects)
+		table.clear(BP.Positions)
+		return BP
 	end
 end
 
