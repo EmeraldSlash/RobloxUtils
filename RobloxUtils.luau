@@ -5,17 +5,22 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 10 (2025-11-30)
+-- Version 11 (2025-12-04)
 --
 
 --
 -- API summary:
 --
+-- .RNG: Random
 -- .RandomSeed()
 -- .IndexFromNumber()
 -- .USin()
 -- .UCos()
 -- .Rebase()
+--
+-- .Accumulator()
+-- Accumulator:Next()
+-- Accumulator:Reset()
 --
 -- .GetAncestry()
 -- .AncestryLookup()
@@ -83,6 +88,16 @@
 -- .TableFindName()
 -- .TableHas()
 -- .TableDeepCopy()
+--
+-- .TableDeepCopyEx()
+-- type TableDeepCopyParams
+-- .TableDeepCopyParamsNew()
+-- .TableDeepCopyParamsDefault: table
+--
+-- .TableStringify()
+-- type TableStringifyParams
+-- .TableStringifyParamsNew()
+-- .TableStringifyParamsDefault: table
 --
 -- .MakeRemotes()
 --
@@ -188,6 +203,7 @@
 
 local Module = {}
 
+Module.RNG = Random.new()
 function Module.RandomSeed()
 	return math.random(2147483647)
 end
@@ -204,6 +220,47 @@ function Module.UCos(Value)
 end
 function Module.Rebase(AValue: number, ABase: number, BBase: number): number
 	return (AValue - ABase) + BBase
+end
+
+--
+-- Accumulator
+--
+-- Generate unique values for things! It is safe to directly modify the Value
+-- field if you need to.
+export type Accumulator = {
+	Value: number;
+
+	-- Advance the accumulator and get the next value.
+	Next: (Accum: Accumulator)->(number);
+
+	-- Reset the accumulator. Returns the value it was reset to (0).
+	Reset: (Accum: Accumulator)->(number);
+
+	-- Mark all values up to and including this value as being consumed,
+	-- guaranteeing the accumulator will never return them. Returns the highest
+	-- previously used value (this is kinda useless).
+	Consume: (Accum: Accumulator, Value: number)->(number);
+}
+do
+	local AccumMeta: Accumulator =
+		(function(): any local c = {}; c.__index = c; return c; end)()
+	function AccumMeta.Next(Accum: Accumulator)
+		Accum.Value += 1
+		return Accum.Value
+	end
+	function AccumMeta.Reset(Accum: Accumulator)
+		Accum.Value = 0
+		return Accum.Value
+	end
+	function AccumMeta.Consume(Accum: Accumulator, Value: number)
+		Accum.Value = math.max(Accum.Value, Value)
+		return Accum.Value
+	end
+	function Module.AccumulatorNew(): Accumulator
+		return setmetatable({
+			Value = 0;
+		} :: Accumulator, AccumMeta) :: any
+	end
 end
 
 --
@@ -720,61 +777,285 @@ function Module.TableFindMatch<V, K>(
 	return ResultIndex, ResultValue
 end
 
+-- Simple table deep copy. Does not try to maintain references or deduplicate
+-- table copies. Does not support tables with recursive references.
+local function TableDeepCopy_Internal(Table: any, Marker: {[any]: boolean?})
+	if Marker[Table] then
+		error("Recursive references detected during deep copy.")
+	end
+	local Clone = table.clone(Table)
+	for Key, Value in Clone do
+		if type(Value) == "table" then
+			Clone[Key] = TableDeepCopy_Internal(Value, Marker)
+		end
+	end
+	Marker[Table] = nil
+	return Clone
+end
 function Module.TableDeepCopy<T>(Table: T): T
-	local Result = {
-		Table = (nil :: any) :: T;
-	}
+	if type(Table) ~= "table" then
+		return Table
+	else
+		return TableDeepCopy_Internal(Table, {}) :: any
+	end
+end
 
-	-- Duplicate references to the same table are handled correctly by caching
-	-- all the new tables we create.
-	local TableCache: {[any]: any} = {}
-	TableCache[Table] = Result
+type TableDeepCopyParams = {
 
-	-- If the tables have keys that are present as values elsewhere in the tables
-	-- they will also be copied, otherwise table keys will not be copied. In
-	-- other words, if a table would be copied, then any uses of it as a key will
-	-- also be updated.
-	local Stack_ByKey: {[any]: {any}} = {}
+	-- WHAT SHOULD BE COPIED?
 
-	type Entry = {
-		Source: {[any]: any};
-		Parent: {[any]: any};
-		Key: any;
-	}
-	local Stack: {Entry} = {{
-		Source = Table :: any;
-		Parent = Result :: any;
-		Key = "Table";
-	}}
-	while true do
-		local Entry = table.remove(Stack)
-		if not Entry then
-			break
+	CopyKeys: boolean; -- If true, keys that are tables will be copied.
+	CopyValues: boolean; -- If true, values that are tables will be copied.
+
+	-- This predicate will be called on all table keys/values. If it returns
+	-- true, the table will be copied, otherwise it won't. The predicate is
+	-- logically OR'd with CopyKeys/CopyValues, so set both of those settings to
+	-- false if you want to prevent something from being copied based on this
+	-- predicate.
+	ShouldCopy: ((IsKey: boolean, Value: any)->(boolean))?;
+
+	-- EXTRA SETTINGS
+
+	-- Deduplicates & maintains references between tables that are referenced
+	-- internally. (External tables i.e. tables not copied via CopyKeys or CopyValues
+	--
+	-- Even if there are some tables that aren't being copied (e.g. keys or
+	-- values or certain keys or values based on the predicate), some of those
+	-- references will be updated anyway if the table existed elsewhere and was
+	-- copied.
+	--
+	-- This field must be set to true if the table has recursive references.
+	--
+	MaintainReferences: boolean;
+}
+function Module.TableDeepCopyParamsNew(Params: TableDeepCopyParams)
+	return Params
+end
+Module.TableDeepCopyParamsDefault = Module.TableDeepCopyParamsNew({
+	CopyKeys = false;
+	CopyValues = true;
+	MaintainReferences = true;
+})
+
+type TableDeepCopyContext = {
+	Params: TableDeepCopyParams;
+	Cache: {[any]: any};
+	PendingFixup: {any};
+	Marker: {[any]: boolean?};
+}
+local function TableDeepCopyEx_Internal(
+	Table: any,
+	Ctx: TableDeepCopyContext
+)
+	if Ctx.Marker[Table] then
+		error("Recursive references detected during deep copy. Params.MaintainReferences must be true for tables that have recursive references.")
+	end
+	Ctx.Marker[Table] = true
+	local Result = table.clone(Table)
+	if Ctx.Params.MaintainReferences then
+		Ctx.Cache[Table] = Result
+		Ctx.PendingFixup[#Ctx.PendingFixup+1] = Result
+	end
+	for Key, Value in Table do
+
+		local NewValue
+		if type(Value) ~= "table" then
+			NewValue = Value
 		else
-
-			local Cached = TableCache[Entry.Source]
-			if Cached then
-				Entry.Parent[Entry.Key] = Cached
+			local Existing =
+				if Ctx.Params.MaintainReferences then Ctx.Cache[Value] else nil
+			if Existing then
+				NewValue = Value
+			elseif
+				Ctx.Params.CopyValues or
+				(Ctx.Params.ShouldCopy and Ctx.Params.ShouldCopy(false, Value))
+			then
+				NewValue = TableDeepCopyEx_Internal(Value, Ctx)
 			else
+				NewValue = Value
+			end
+		end
 
-				local Clone = table.clone(Entry.Source)
-				TableCache[Entry.Source] = Clone
-				Entry.Parent[Entry.Key] = Clone
+		local NewKey
+		if type(Key) ~= "table" then
+			NewKey = Key
+		else
+			local Existing =
+				if Ctx.Params.MaintainReferences then Ctx.Cache[Key] else nil
+			if Existing then
+				NewKey = Key
+			elseif
+				Ctx.Params.CopyKeys or
+				(Ctx.Params.ShouldCopy and Ctx.Params.ShouldCopy(true, Key))
+			then
+				NewKey = TableDeepCopyEx_Internal(Key, Ctx)
+			else
+				NewKey = Key
+			end
+		end
 
-				for Key, Value in Clone do
-					if type(Value) == "table" then
-						Stack[#Stack+1] = {
-							Source = Value;
-							Parent = Clone;
-							Key = Key;
-						}
+		Result[Key] = nil
+		Result[NewKey] = NewValue
+	end
+	Ctx.Marker[Table] = nil
+	return Result
+end
+function Module.TableDeepCopyEx<T>(Table: T, Params: TableDeepCopyParams?): T
+	if type(Table) ~= "table" then
+		return Table
+	else
+		Params = Params or Module.TableDeepCopyParamsDefault
+		assert(type(Params) == "table", "DeepCopy params must be a table!")
+
+		local Ctx: TableDeepCopyContext = {
+			Params = Params;
+			Cache = {};
+			PendingFixup = {};
+			Marker = {};
+		}
+		local Result = TableDeepCopyEx_Internal(Table, Ctx)
+
+		if Ctx.Params.MaintainReferences then
+			for _, Table in Ctx.PendingFixup do
+				for Key, Value in Table do
+
+					local NewValue
+					local Existing = Ctx.Cache[Value]
+					if Existing then
+						NewValue = Existing
+					else
+						NewValue = Value
 					end
-					if type(Key) == "table" then
-						local Array = Stack_ByKey[Key]
-						if Array then
-							Array[#Array+1] = Clone
-						else
-							Stack_ByKey[Key] = {Clone}
+
+					local NewKey
+					local Existing = Ctx.Cache[Key]
+					if Existing then
+						NewKey = Existing
+					else
+						NewKey = Key
+					end
+
+					Table[Key] = nil
+					Table[NewKey] = NewValue
+				end
+			end
+		end
+
+		return Result
+	end
+end
+
+export type TableStringifyParams = {
+	-- The string that will be used when printing indentation. e.g. 3 spaces or
+	-- a tab character. Default value: 3 spaces.
+	Indentation: string?;
+
+	-- Maximum depth of the table that will be printed. Default value: inf.
+	MaxDepth: number?;
+
+	-- Only expand each table once. Subsequent references to this table will
+	-- just show a unique ID of that table. Default value: false.
+	Deduplicate: boolean?;
+
+	-- Include the memory address of every expanded table. Default value: false.
+	ShowAddress: boolean?;
+}
+function Module.TableStringifyParamsNew(Params: TableStringifyParams)
+	return Params
+end
+Module.TableStringifyParamsDefault = {
+	Indentation = "   ";
+	MaxDepth = math.huge;
+	Deduplicate = false;
+	ShowAddress = false;
+}
+
+-- This function will stringify a table in a nice format with useful
+-- information.
+--
+-- Tables passed to the table may have the following fields defined on the them
+-- (including via an __index metamethod), which you can use to show additional
+-- information per table:
+--
+-- __TS_Label: string. Text that is displayed whenever the table is present
+-- (including when table is cyclic or unexpanded).
+--
+-- __TS_Hidden: boolean. Truthy when table should not be expanded (i.e.
+-- truthy when table should be hidden/ignored).
+--
+function Module.TableStringify(
+	Table: any,
+	Params: TableStringifyParams?
+): string
+
+	if (type(Table) ~= "table") then
+		return tostring(Table)
+	end
+
+	Params = Params or Module.TableStringifyParamsDefault
+	assert(type(Params) == "table", "Stringify params must be a table!")
+
+	if Params.Indentation and type(Params.Indentation) ~= "string" then
+		error(("Params.Indentation must be a string or nil, instead got %s.")
+			:format(typeof(Params.Indentation)))
+	end
+	if Params.MaxDepth and type(Params.MaxDepth) ~= "number" then
+		error(("Params.MaxDepth must be a number or nil, instead got %s.")
+			:format(typeof(Params.MaxDepth)))
+	end
+
+	local _Indentation = Params.Indentation or "   "
+	local _MaxDepth = Params.MaxDepth or math.huge
+	local Deduplicate = if Params.Deduplicate then true else false
+	local ShowAddress = if Params.ShowAddress then true else false
+
+	-- First, recurse through all the tables and give them IDs.
+	local TableIDs = {}
+	do
+		local IDCounter = 1
+
+		local IncompleteNodeStack = {}
+		local Visited_ByTable = {}
+
+		-- Initial node for the table we are trying to stringify.
+		IncompleteNodeStack[#IncompleteNodeStack+1] =
+			{Table = Table, LastKey = nil}
+		Visited_ByTable[Table] = true
+
+		while true do
+			local Node = IncompleteNodeStack[#IncompleteNodeStack]
+			if not Node then
+				break
+			else
+				while true do
+					local Key, Value = next(Node.Table, Node.LastKey)
+					Node.LastKey = Key
+					if Key == nil then
+						-- Remove this node from the stack and return to the previous
+						-- node.
+						IncompleteNodeStack[#IncompleteNodeStack] = nil
+						break
+					else
+						if type(Key) == "table" then
+							if not TableIDs[Key] then
+								TableIDs[Key] = IDCounter
+								IDCounter += 1
+							end
+						end
+						if type(Value) == "table" then
+							if not TableIDs[Value] then
+								TableIDs[Value] = IDCounter
+								IDCounter += 1
+							end
+
+							if not Visited_ByTable[Value] then
+								if #IncompleteNodeStack < _MaxDepth then
+									IncompleteNodeStack[#IncompleteNodeStack+1] =
+										{Table = Value, LastKey = nil}
+									Visited_ByTable[Value] = true
+									break
+								end
+							end
 						end
 					end
 				end
@@ -782,19 +1063,246 @@ function Module.TableDeepCopy<T>(Table: T): T
 		end
 	end
 
-	for Key, Stack in Stack_ByKey do
-		local Cached = TableCache[Key]
-		if Cached then
-			for _, This in Stack do
-				local Value = This[Key]
-				This[Key] = nil
-				This[Cached] = Value
+	-- Then, build the actual output by recursing through the tables again.
+	local Output = {}
+	do
+
+		-- We accumulate IDs again, so that IDs are the same as the order in which
+		-- they are rendered.
+		local ActualID_ByID = {}
+		local ActualIDCounter = 1
+		local function GetID(Table)
+			local Result = nil
+			local ID = TableIDs[Table]
+			if ID then
+				if not ActualID_ByID[Table] then
+					ActualID_ByID[Table] = ActualIDCounter
+					ActualIDCounter += 1
+				end
+				Result = ActualID_ByID[Table]
+			end
+			return Result
+		end
+
+		local IndentDepth = 0
+		local HasRendered_ByTable = {}
+
+		local IsInStack_ByTable = {}
+		local IncompleteNodeStack: {{
+			Table: any;
+			LastKey: any?;
+			DisplayedLabels: boolean?;
+		}} = {}
+
+		-- Initial node for the table we are trying to stringify.
+		IncompleteNodeStack[#IncompleteNodeStack+1] =
+			{Table = Table, LastKey = nil, DisplayedLabels = nil}
+		IsInStack_ByTable[Table] = true
+
+		while true do
+			local Node = IncompleteNodeStack[#IncompleteNodeStack]
+			if not Node then
+				break
+			else
+				if Node.LastKey == nil then
+					IndentDepth += 1
+
+					Output[#Output+1] = "{"
+
+					if next(Node.Table) then
+						Node.DisplayedLabels = true
+						if ShowAddress then
+							Output[#Output+1] = "0x"
+							Output[#Output+1] = string.match(tostring(Table), "0x(.+)") or "ERROR"
+							Output[#Output+1] = ""
+						end
+						local ID = GetID(Node.Table)
+						if ID then
+							if ShowAddress then
+								Output[#Output+1] = ","
+							end
+							Output[#Output+1] = " #("
+							Output[#Output+1] = tostring(ID)
+							Output[#Output+1] = ")"
+						end
+						local Label = Node.Table.__TS_Label
+						if Label then
+							if ID or ShowAddress then
+								Output[#Output+1] = ","
+							end
+							Output[#Output+1] = " '"
+							Output[#Output+1] = Label
+							Output[#Output+1] = "'"
+						end
+					end
+				end
+
+				while true do
+					-- If we have outputted a value previously, append semicolon.
+					local DidHaveValues = (Node.LastKey ~= nil)
+					if DidHaveValues then
+						Output[#Output+1] = ";"
+					end
+
+					local Key, Value = next(Node.Table, Node.LastKey)
+					Node.LastKey = Key
+
+					if Key == nil then
+						IndentDepth -= 1
+
+						if DidHaveValues then
+							Output[#Output+1] = "\n"
+							Output[#Output+1] = string.rep(_Indentation, IndentDepth)
+						end
+						Output[#Output+1] = "}"
+
+						if not Node.DisplayedLabels then
+							Node.DisplayedLabels = true
+							local ID = GetID(Node.Table)
+							if ID then
+								Output[#Output+1] = ", #("
+								Output[#Output+1] = tostring(ID)
+								Output[#Output+1] = ")"
+							end
+							local Label = Node.Table.__TS_Label
+							if Label then
+								Output[#Output+1] = ", '"
+								Output[#Output+1] = Label
+								Output[#Output+1] = "'"
+							end
+						end
+
+						-- Remove this node from the stack and return to the previous
+						-- node.
+						IncompleteNodeStack[#IncompleteNodeStack] = nil
+						IsInStack_ByTable[Node.Table] = nil
+						break
+					else
+						Output[#Output+1] = "\n"
+						Output[#Output+1] = string.rep(_Indentation, IndentDepth)
+						Output[#Output+1] = "["
+
+						if type(Key) == "table" then
+							Output[#Output+1] = "table"
+							local ID = GetID(Key)
+							if ShowAddress or not ID then
+								Output[#Output+1] = ", 0x"
+								Output[#Output+1] = string.match(tostring(Table), "0x(.+)") or "ERROR"
+							end
+							if ID then
+								Output[#Output+1] = ", #("
+								Output[#Output+1] = tostring(ID)
+								Output[#Output+1] = ")"
+							end
+							local Label = Key.__TS_Label
+							if Label then
+								Output[#Output+1] = ", '"
+								Output[#Output+1] = Label
+								Output[#Output+1] = "'"
+							end
+						elseif type(Key) == "string" then
+							Output[#Output+1] = "\""
+							Output[#Output+1] = Key
+							Output[#Output+1] = "\""
+						else
+							Output[#Output+1] = tostring(Key)
+						end
+
+						Output[#Output+1] = "] = "
+
+						if type(Value) == "table" then
+							if IsInStack_ByTable[Value] then
+								Output[#Output+1] = "cyclic reference to #("
+								Output[#Output+1] = tostring(GetID(Value))
+								Output[#Output+1] = ")"
+							elseif (#IncompleteNodeStack >= _MaxDepth) then
+								Output[#Output+1] = "exceeds max depth"
+								local ID = GetID(Value)
+								if ID then
+									Output[#Output+1] = ", #("
+									Output[#Output+1] = tostring(ID)
+									Output[#Output+1] = ")"
+								end
+								local Label = Value.__TS_Label
+								if Label then
+									Output[#Output+1] = ", '"
+									Output[#Output+1] = Label
+									Output[#Output+1] = "'"
+								end
+							elseif (Value.__TS_Hidden) then
+								Output[#Output+1] = "hidden"
+								local ID = GetID(Value)
+								if ID then
+									Output[#Output+1] = ", #("
+									Output[#Output+1] = tostring(ID)
+									Output[#Output+1] = ")"
+								end
+								local Label = Value.__TS_Label
+								if Label then
+									Output[#Output+1] = ", '"
+									Output[#Output+1] = Label
+									Output[#Output+1] = "'"
+								end
+							elseif (HasRendered_ByTable[Value]) then
+								Output[#Output+1] = "dup"
+								local ID = GetID(Value)
+								if ID then
+									Output[#Output+1] = ", #("
+									Output[#Output+1] = tostring(ID)
+									Output[#Output+1] = ")"
+								end
+								local Label = Value.__TS_Label
+								if Label then
+									Output[#Output+1] = ", '"
+									Output[#Output+1] = Label
+									Output[#Output+1] = "'"
+								end
+							else
+								if Deduplicate then
+									HasRendered_ByTable[Value] = true
+								end
+								-- Add a new node to the stack and begin processing it.
+								IncompleteNodeStack[#IncompleteNodeStack+1] =
+									{Table = Value, LastKey = nil, DisplayedLabels = nil}
+								IsInStack_ByTable[Value] = true
+								break
+							end
+						elseif type(Value) == "string" then
+							Output[#Output+1] = "\""
+							Output[#Output+1] = Value
+							Output[#Output+1] = "\""
+						else
+							Output[#Output+1] =  tostring(Value)
+						end
+					end
+				end
 			end
 		end
 	end
 
-	return Result.Table
+	return table.concat(Output, "")
 end
+--[[ Just some test data for the print function
+function Module.TableStringify_GenerateTestData()
+	local SubTable = {"a, b, c, d, e", function() end}
+	local Table: {[any]: any} = {
+		1,
+		2,
+		3,
+		4,
+		5,
+		{6, 7, 8, 9},
+		SubTable,
+		Boolean = true,
+		[true] = "Boolean?",
+		[false] = 1433.343,
+	}
+	Table.Alpha = {Table, [Table :: any] = "Fourteen"};
+	Table.Beta = Table
+	Table.Twelve = SubTable
+	return Table
+end
+--]]
 
 --
 -- Remote creation helper
