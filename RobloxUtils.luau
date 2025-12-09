@@ -5,13 +5,14 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 11 (2025-12-04)
+-- Version 13 (2025-12-09)
 --
 
 --
 -- API summary:
 --
 -- .RNG: Random
+-- .PickRandom()
 -- .RandomSeed()
 -- .IndexFromNumber()
 -- .USin()
@@ -192,6 +193,8 @@
 -- type SafeAreaMetrics
 -- .SafeAreaMetricsNew()
 -- SAM:Update()
+-- SAM:BRectInASpace()
+-- SAM:IsTopbarValid()
 --
 -- type BulkPositioner
 -- .BP_New()
@@ -204,6 +207,10 @@
 local Module = {}
 
 Module.RNG = Random.new()
+function Module.PickRandom<T>(Array: {T}, RNG: Random?): T
+	local _RNG = RNG or Module.RNG
+	return Array[_RNG:NextInteger(1, #Array)]
+end
 function Module.RandomSeed()
 	return math.random(2147483647)
 end
@@ -314,32 +321,23 @@ end
 function Module.BindDescendantCount(
 	Object: Instance,
 	Callback: ()->(),
-	Maid: Maid?
+	Maid: any?
 ): RBXScriptConnection?
-
-	local Completed = false
-	local function CheckAttribute()
-		if Module.CheckDescendantCount(Object) then
-			if not Completed then
-				Completed = true
-				Callback()
-			end
-		end
-		return Completed
-	end
-
 	local Connection: RBXScriptConnection?
-	if not CheckAttribute() then
+	if Module.CheckDescendantCount(Object) then
+		Callback()
+	else
 		Connection = Object:GetAttributeChangedSignal("DescendantCount"):Connect(function()
 			if Connection and
 				Connection.Connected
 			then
-				if CheckAttribute() then
+				if Module.CheckDescendantCount(Object) then
 					Connection:Disconnect()
 					Connection = nil
 					if Maid then
 						Maid:Remove(Connection)
 					end
+					Callback()
 				end
 			end
 		end)
@@ -542,8 +540,8 @@ end
 function Module.V3_Abs(V: Vector3): Vector3
 	return Module.V3_Max(V, -V)
 end
-function Module.V3_SafeUnit(V: Vector3)
-	return if V ~= Vector3.zero then V.Unit else V
+function Module.V3_SafeUnit(V: Vector3, Default: Vector3?)
+	return if V ~= Vector3.zero then V.Unit else (Default or V)
 end
 
 Module.V3_XZ = Vector3.new(1, 0, 1)
@@ -749,7 +747,7 @@ function Module.TableFindName(Table: {[any]: any}, Value: any): string
 	if not Result then
 		Result = ("<unknown value '%s'>"):format(tostring(Value))
 	end
-	return Result
+	return Result :: string
 end
 function Module.TableHas<T>(Table: {[T]: any}, Value: any): (boolean, T)
 	local ResultKey = nil
@@ -963,12 +961,12 @@ export type TableStringifyParams = {
 function Module.TableStringifyParamsNew(Params: TableStringifyParams)
 	return Params
 end
-Module.TableStringifyParamsDefault = {
+Module.TableStringifyParamsDefault = Module.TableStringifyParamsNew({
 	Indentation = "   ";
 	MaxDepth = math.huge;
 	Deduplicate = false;
 	ShowAddress = false;
-}
+})
 
 -- This function will stringify a table in a nice format with useful
 -- information.
@@ -1014,7 +1012,10 @@ function Module.TableStringify(
 	do
 		local IDCounter = 1
 
-		local IncompleteNodeStack = {}
+		local IncompleteNodeStack: {{
+			Table: any;
+			LastKey: any?;
+		}} = {}
 		local Visited_ByTable = {}
 
 		-- Initial node for the table we are trying to stringify.
@@ -1536,7 +1537,7 @@ do
 		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
 	function MaidMeta.Remove<T...>(Maid: Maid, ...: T...): (T...)
 		for Index = 1, select("#", ...) do
-			local ValueIndex = table.find(Maid.MaidValues, select(Index, ...))
+			local ValueIndex = table.find(Maid.MaidValues, select(Index, ...) :: any)
 			if ValueIndex then
 				table.remove(Maid.MaidValues, ValueIndex)
 			end
@@ -1609,12 +1610,12 @@ do
 					(Value :: HasMaidClean<any>):MaidClean()
 				elseif type((Value :: HasDestroy<any>).Destroy) == "function" then
 					(Value :: HasDestroy<any>):Destroy()
-				elseif type((Value :: HasDestroy<any>).destroy) == "function" then
-					(Value :: HasDestroy<any>):destroy()
+				elseif type((Value :: HasDestroyLower<any>).destroy) == "function" then
+					(Value :: HasDestroyLower<any>):destroy()
 				elseif type((Value :: HasDisconnect<any>).Disconnect) == "function" then
 					(Value :: HasDisconnect<any>):Disconnect()
 				elseif type((Value :: HasDisconnectLower<any>).disconnect) == "function" then
-					(Value :: HasDestroy<any>):disconnect()
+					(Value :: HasDisconnectLower<any>):disconnect()
 				else
 					local Message = "Table found in Maid was not another Maid and did not have a Destroy, Disconnect, or MaidClean method."
 					if MAID_DEBUG_ENABLED then
@@ -1759,7 +1760,7 @@ do
 	function BulkMoveToMeta.Apply(BMT: BulkMoveTo): boolean
 		local DidMove = BMT.Index > 0
 		if DidMove then
-			workspace:BulkMoveTo(BMT.Parts, BMT.CFrames)
+			workspace:BulkMoveTo(BMT.Parts :: {Instance}, BMT.CFrames)
 			BMT.Index = 0
 			table.clear(BMT.Parts)
 			table.clear(BMT.CFrames)
@@ -2912,10 +2913,19 @@ export type SafeAreaMetrics = {
 	-- Call this to update the safe area metrics.
 	Update: (SafeAreaMetrics)->(boolean);
 
-	-- Use this obtain the rect of safe area B inside safe area A. Usage
-	-- example: a Respecting the Core UI safe area when using a ScreenGui of the
+	-- Use this obtain the rect of safe area B inside safe area A. Usage example:
+	-- Respecting the Core UI safe area when using a ScreenGui set to the
 	-- Fullscreen safe area.
 	BRectInASpace: (SAM: SafeAreaMetrics, APos: Vector2, BPos: Vector2, BSize: Vector2)->(Vector2, Vector2);
+
+	-- On startup, the topbar area will cover the entire screen (the area
+	-- equivalent to using device insets I believe, but haven't confirmed). Since
+	-- code will often try to make UIs fill the topbar area, they will end up
+	-- covering the whole screen for at least one frame on startup. We don't want
+	-- that, so we can allow code to avoid that scenario here by checking if
+	-- topbar and device sizes differ. If they differ then the function returns
+	-- true to indicate the topbar size and position can be used.
+	IsTopbarValid: (SAM: SafeAreaMetrics)->(boolean);
 }
 do
 	local SG_C = Instance.new("ScreenGui")
@@ -2963,6 +2973,10 @@ do
 	function SAMMeta.BRectInASpace(_, APos, BPos, BSize): (Vector2, Vector2)
 		local TopLeft = BPos - APos
 		return TopLeft, TopLeft + BSize
+	end
+
+	function SAMMeta.IsTopbarValid(SAM: SafeAreaMetrics): boolean
+		return SAM.TSize ~= SAM.DSize
 	end
 
 	function SAMMeta.Update(
