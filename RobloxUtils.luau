@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 13 (2025-12-09)
+-- Version 17 (2025-12-27)
 --
 
 --
@@ -22,6 +22,11 @@
 -- .Accumulator()
 -- Accumulator:Next()
 -- Accumulator:Reset()
+--
+-- .Bind()
+-- .BindSpawn()
+-- .BindDefer()
+-- .BindThread()
 --
 -- .GetAncestry()
 -- .AncestryLookup()
@@ -268,6 +273,56 @@ do
 			Value = 0;
 		} :: Accumulator, AccumMeta) :: any
 	end
+end
+
+--
+-- Bind
+--
+-- Use like:
+--[[
+local Conn = Bind(Signal, Callback)
+--]]
+function Module.Bind<T...>(
+	Signal: RBXScriptSignal,
+	Callback: (T...)->(),
+	...: T...
+): RBXScriptConnection
+	local Connection = Signal:Connect(Callback)
+	Callback(...)
+	return Connection
+end
+function Module.BindSpawn<T...>(
+	Signal: RBXScriptSignal,
+	Callback: (T...)->(),
+	...: T...
+): RBXScriptConnection
+	local Connection = Signal:Connect(Callback)
+	task.spawn(Callback, ...)
+	return Connection
+end
+function Module.BindDefer<T...>(
+	Signal: RBXScriptSignal,
+	Callback: (T...)->(),
+	...: T...
+): RBXScriptConnection
+	local Connection = Signal:Connect(Callback)
+	task.defer(Callback, ...)
+	return Connection
+end
+-- Use like:
+--[[
+local Conn, Thread = BindThread(Signal, Callback)
+State.Conn = Conn
+task.spawn(Thread)
+--]]
+function Module.BindThread<T...>(
+	Signal: RBXScriptSignal,
+	Callback: (T...)->(),
+	...: T...
+): (RBXScriptConnection, thread)
+	local Connection = Signal:Connect(Callback)
+	local Thread = coroutine.create(Callback)
+	return Connection, Thread
 end
 
 --
@@ -1537,7 +1592,7 @@ do
 		(function(): any local Class = {}; Class.__index = Class; return Class; end)()
 	function MaidMeta.Remove<T...>(Maid: Maid, ...: T...): (T...)
 		for Index = 1, select("#", ...) do
-			local ValueIndex = table.find(Maid.MaidValues, select(Index, ...) :: any)
+			local ValueIndex = table.find(Maid.MaidValues :: any, select(Index, ...) :: any)
 			if ValueIndex then
 				table.remove(Maid.MaidValues, ValueIndex)
 			end
@@ -1579,7 +1634,9 @@ do
 			elseif typeof(Value) == "Instance" then
 				Value:Destroy()
 			elseif type(Value) == "thread" then
-				coroutine.close(Value)
+				if Value ~= coroutine.running() then
+					coroutine.close(Value)
+				end
 			elseif type(Value) == "function" then
 				Value()
 			elseif type(Value) == "table" then
@@ -1760,7 +1817,7 @@ do
 	function BulkMoveToMeta.Apply(BMT: BulkMoveTo): boolean
 		local DidMove = BMT.Index > 0
 		if DidMove then
-			workspace:BulkMoveTo(BMT.Parts :: {Instance}, BMT.CFrames)
+			workspace:BulkMoveTo(BMT.Parts, BMT.CFrames)
 			BMT.Index = 0
 			table.clear(BMT.Parts)
 			table.clear(BMT.CFrames)
@@ -2515,7 +2572,7 @@ Anim
 	:Compute(Delta) -- Update previous animation.
 	:SetEaseDir(if Target > 0.5 then Enum.EasingStyle.In else Enum.EasingStyle.Out)
 	:Aim(Target) -- Set new animation target.
-	:Consume() -- Write to Anim.Dirty.
+	:Consume() -- Write to Anim.Dirty and Anim.Delta.
 --]]
 --
 -- Here's how you can run the animation with constant speed. I recommend you use
@@ -2529,13 +2586,15 @@ export type Anim = {
 	-- current value of the animation
 	Value: number;
 	Dirty: boolean; -- Set only when using Anim:Consume()
+	Delta: number; -- Set only when using Anim:Consume()
 
 	-- internal state
 	Duration: number;
 	Start: number;
 	Target: number;
 	Elapsed: number?; -- only set when an animation is active
-	EaseStyle: Enum.EasingStyle?;
+	Easer: AnimEaser?; -- custom easing function
+	EaseStyle: Enum.EasingStyle?; -- builtin easing function using TweenService
 	EaseDir: Enum.EasingDirection?;
 	Cached_Value: number?;
 
@@ -2546,10 +2605,24 @@ export type Anim = {
 	Consume: (Anim: Anim)->(Anim);
 	Eval: (Anim: Anim, Delta: number, Target: number)->(Anim);
 	SetDuration: (Anim: Anim, Duration: number)->(Anim);
+	SetEaser: (Anim: Anim, Easer: AnimEaser)->(Anim);
 	SetEaseStyle: (Anim: Anim, EaseStyle: Enum.EasingStyle?)->(Anim);
 	SetEaseDir: (Anim: Anim, EaseDir: Enum.EasingDirection?)->(Anim);
 	IsDone: (Anim: Anim, Target: number?)->(boolean);
 }
+-- The Easer function is allowed to read the following fields from Anim:
+--
+-- .Duration
+-- .Start
+-- .Target
+-- .Elapsed (subtract Delta argument to obtain Elapsed before anim started)
+-- .EaseStyle
+-- .EaseDir
+--
+-- And it should return the linear progress [0-1] of the animation, which will
+-- be used to lerp .Start to .Target.
+export type AnimEaser =
+	(Progress: number, Anim: Anim, Delta: number, ConstantSpeed: boolean?)->(number)
 do
 	local TweenService = game:GetService("TweenService")
 	local TweenService_GetValue = TweenService.GetValue
@@ -2560,15 +2633,17 @@ do
 	function Module.AnimNew(
 		Value: number?,
 		Duration: number,
-		EaseStyle: Enum.EasingStyle?,
+		EaseStyle: Enum.EasingStyle? | AnimEaser?,
 		EaseDir: Enum.EasingDirection?
 	): Anim
+		local EaseType = typeof(EaseStyle)
 		return setmetatable({
 			Duration = Duration;
 			Value = Value;
 			Start = Value;
 			Target = Value;
-			EaseStyle = EaseStyle;
+			Easer = if EaseType == "function" then EaseStyle else nil;
+			EaseStyle = if EaseType == "Enum" then EaseStyle else nil;
 			EaseDir = EaseDir;
 		} :: Anim, AnimMeta) :: any
 	end
@@ -2577,6 +2652,7 @@ do
 		if Anim.Target ~= Target then
 			Anim.Target = Target
 			Anim.Start = Anim.Value or Target
+			Anim.Value = Anim.Value or Target
 			Anim.Elapsed = if Anim.Target ~= Anim.Start then 0 else nil
 		end
 		return Anim
@@ -2598,9 +2674,13 @@ do
 			-- The animation will bias towards being complete if duration is 0.
 			if Progress ~= Progress then Progress = 1 end
 			Progress = math.clamp(Progress, 0, 1)
-			if Progress > 0 and Progress < 1 and Anim.EaseStyle then
-				Progress = TweenService_GetValue(TweenService,
-					Progress, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
+			if Progress > 0 and Progress < 1 then
+				if Anim.Easer then
+					Progress = Anim.Easer(Progress, Anim, Delta, ConstantSpeed)
+				elseif Anim.EaseStyle then
+					Progress = TweenService_GetValue(TweenService,
+						Progress, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
+				end
 			end
 			Anim.Value = math.lerp(Anim.Start, Anim.Target, Progress)
 			if Anim.Value == Anim.Target then
@@ -2614,11 +2694,14 @@ do
 	end
 	function AnimMeta.Consume(Anim: Anim): Anim
 		local Dirty = false
+		local Delta = 0
 		if Anim.Cached_Value ~= Anim.Value then
-			Anim.Cached_Value = Anim.Value
+			Delta = if Anim.Cached_Value then Anim.Value - Anim.Cached_Value else 0
 			Dirty = true
+			Anim.Cached_Value = Anim.Value
 		end
 		Anim.Dirty = Dirty
+		Anim.Delta = Delta
 		return Anim
 	end
 
@@ -2632,6 +2715,10 @@ do
 	end
 	function AnimMeta.SetEaseStyle(Anim: Anim, EaseStyle: Enum.EasingStyle?)
 		Anim.EaseStyle = EaseStyle
+		return Anim
+	end
+	function AnimMeta.SetEaser(Anim: Anim, Easer: AnimEaser)
+		Anim.Easer = Easer
 		return Anim
 	end
 	function AnimMeta.IsDone(Anim: Anim, Target: number?)
