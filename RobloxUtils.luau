@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 17 (2025-12-27)
+-- Version 24 (2026-02-05)
 --
 
 --
@@ -13,6 +13,7 @@
 --
 -- .RNG: Random
 -- .PickRandom()
+-- .PickRandomWeighted()
 -- .RandomSeed()
 -- .IndexFromNumber()
 -- .USin()
@@ -78,6 +79,11 @@
 -- .V2_Abs()
 -- .V2_SafeUnit()
 --
+-- .CFrame_Vertical()
+--
+-- .FastAABB()
+-- .IsInBB()
+--
 -- .ArrayRemove()
 -- .ArrayAppend()
 -- .ArrayAppendOnce()
@@ -104,6 +110,10 @@
 -- type TableStringifyParams
 -- .TableStringifyParamsNew()
 -- .TableStringifyParamsDefault: table
+--
+-- .FormatSuffixesTable
+-- .FormatCommaInt()
+-- .FormatCompact()
 --
 -- .MakeRemotes()
 --
@@ -146,6 +156,18 @@
 -- SignalConnection.Connected
 -- SignalConnection:Destroy/Disconnect()
 --
+-- type Arbiter
+-- .ArbiterNew
+-- Arbiter:Once()
+-- Arbiter:Every()
+-- Arbiter:Grab()
+-- Arbiter:Add()
+-- Arbiter:Remove()
+-- Arbiter:Set()
+-- Arbiter:Clear()
+-- Arbiter:Update()
+-- Arbiter:UpdateForce()
+--
 -- type DLL_Node
 -- .DLL_Create()
 -- .DLL_ReplaceSentinel()
@@ -160,11 +182,11 @@
 -- .DLL_Remove()
 --
 -- type ContextActionMulti
--- .CAM_New()
--- .CAM_NewBound()
--- ContextActionMulti:SetInputs()
--- ContextActionMulti:SetBound()
 -- ContextActionMulti:Destroy()
+-- .CAM_New()
+-- ContextActionMulti:SetInputs()
+-- .CAM_NewBound()
+-- ContextActionMulti:SetBound()
 --
 -- type Cache
 -- .CacheNew()
@@ -176,15 +198,17 @@
 --
 -- type Anim
 -- .AnimNew()
+-- .AnimImm()
 -- Anim:Aim()
 -- Anim:AimFrom()
 -- Anim:Compute()
 -- Anim:Consume()
 -- Anim:Eval()
+-- Anim:IsDone()
 -- Anim:SetDuration()
+-- Anim:SetEasing()
 -- Anim:SetEaseDir()
 -- Anim:SetEaseStyle()
--- Anim:IsDone()
 --
 -- type GuiStateEye
 -- .GSE_New()
@@ -208,6 +232,14 @@
 -- BP:Apply()
 -- BP:Transfer()
 -- BP:Clear()
+--
+-- type SurfaceBillboard
+-- type SurfaceBillboardProps
+-- .SurfaceBillboardNew()
+-- SB:Set()
+-- SB:SetProp()
+-- SB:Update()
+-- SB:Destroy()
 
 local Module = {}
 
@@ -215,6 +247,30 @@ Module.RNG = Random.new()
 function Module.PickRandom<T>(Array: {T}, RNG: Random?): T
 	local _RNG = RNG or Module.RNG
 	return Array[_RNG:NextInteger(1, #Array)]
+end
+function Module.PickRandomWeighted<T>(Array: {T}, GetWeight, RNG: Random?): T
+	local _RNG = RNG or Module.RNG
+	local TotalWeight = 0
+	for _, Item in Array do
+		TotalWeight += math.max(0, GetWeight(Item))
+	end
+	local Value = _RNG:NextNumber(0, TotalWeight)
+	local Sum = 0
+	local Result
+	for _, Item in Array do
+		local Weight = GetWeight(Item)
+		if Weight > 0 then
+			Sum += Weight
+			if Value <= Sum then
+				Result = Item
+				break
+			end
+		end
+	end
+	if not Result then
+		Result = Array[1]
+	end
+	return Result
 end
 function Module.RandomSeed()
 	return math.random(2147483647)
@@ -666,6 +722,27 @@ end
 --
 -- Simple Queries
 --
+function Module.FastAABB(Transform: CFrame, Size: Vector3): (Vector3, Vector3)
+	local SX, SY, SZ = Size.X, Size.Y, Size.Z
+	local X, Y, Z, R00, R01, R02, R10, R11, R12, R20, R21, R22 =
+		Transform:GetComponents()
+
+	local WSX = 0.5 * (math.abs(R00)*SX + math.abs(R01)*SY + math.abs(R02)*SZ)
+	local WSY = 0.5 * (math.abs(R10)*SX + math.abs(R11)*SY + math.abs(R12)*SZ)
+	local WSZ = 0.5 * (math.abs(R20)*SX + math.abs(R21)*SY + math.abs(R22)*SZ)
+
+	local MinX = math.min( math.huge, X - WSX)
+	local MinY = math.min( math.huge, Y - WSY)
+	local MinZ = math.min( math.huge, Z - WSZ)
+
+	local MaxX = math.max(-math.huge, X + WSX)
+	local MaxY = math.max(-math.huge, Y + WSY)
+	local MaxZ = math.max(-math.huge, Z + WSZ)
+
+	return
+		Vector3.new(MinX, MinY, MinZ),
+		Vector3.new(MaxX, MaxY, MaxZ)
+end
 function Module.IsInBB(
 	BBCFrame: CFrame,
 	BBSize: Vector3,
@@ -1361,6 +1438,213 @@ end
 --]]
 
 --
+-- Number Formatting
+--
+Module.FormatSuffixesTable = {
+	-- Indexed in log1000s.
+	[ 0] = "";
+	[ 1] = "K";
+	[ 2] = "M";
+	[ 3] = "B";
+	[ 4] = "T";
+	[ 5] = "Qd";
+	[ 6] = "Qn";
+	[ 7] = "Sx";
+	[ 8] = "Sp";
+	[ 9] = "Oc";
+	[10] = "Nn";
+	[11] = "De";
+	[12] = "Ud";
+	[13] = "Dd";
+	[14] = "Td";
+	[15] = "Qt";
+	[16] = "Sd";
+	[17] = "St";
+	[18] = "Od";
+	[19] = "Nd";
+	[20] = "Vn";
+}
+local function FormatSpecial(Number): string?
+	if Number == math.huge then
+		return "Inf"
+	elseif Number == -math.huge then
+		return "-Inf"
+	elseif Number ~= Number then
+		return "NaN"
+	else
+		return nil
+	end
+end
+local function FormatCommaUInt(Number): {string}
+	local MagIndex = math.max(0, math.log10(Number) // 3)
+	local Chars = {}
+	for Index = MagIndex, 0, -1  do
+		local Divisor = math.pow(10, Index*3)
+		local Rounded = math.floor(Number / Divisor) % 1000
+		Chars[#Chars+1] =
+			if Index < MagIndex then string.format("%03d", Rounded)
+			else string.format("%d", Rounded)
+		if Index > 0 then
+			Chars[#Chars+1] = ","
+		end
+	end
+	return Chars
+end
+function Module.FormatCommaInt(Number): string
+	local Result = FormatSpecial(Number)
+	if not Result then
+		local Chars = FormatCommaUInt(math.floor(math.abs(Number)))
+		if math.sign(Number) == -1 then
+			table.insert(Chars, 1, "-")
+		end
+		Result = table.concat(Chars)
+	end
+	return Result :: string
+end
+function Module.FormatCompact(
+	Number: number,
+
+	-- Adjust the maximum decimal precision of compact text. Defaults to 1 (or
+	-- SuffixesScale-2 if it is set). Decimal precision is reduced dynamically
+	-- based on the size of rendered number to keep compact text within a uniform
+	-- size. So the maximum precision is only used in full when the rendered
+	-- number is a single digit.
+	MaxDecimalPrecision: number?,
+
+	-- Set to true to force decimals to always render even if they are zero.
+	ForcePadDecimals: boolean?,
+
+	-- Suffixes will only be used when the absolute value of the number is
+	-- greater than or equal to this value, otherwise commas will be used.
+	SuffixesAt: number?,
+
+	-- Adjust the mapping of number scales to suffixes. Defaults to
+	-- Module.FormatSuffixesTable. Indices can also be negative, for numbers that
+	-- are smaller than the unit. Indices are in the units indicated by
+	-- SuffixesScale. Holes in the suffix table will be resolved by picking the
+	-- largest suffix that is smaller than the number, or failing that, the
+	-- smallest suffix that is larger than the number.
+	SuffixesTable: {[number]: string}?,
+
+	-- Adjust the scale of the suffixes table, as an exponent of 10. A value of 3
+	-- = 1000, 4 = 10_000, etc. Defaults to 3. When this is greater than 3,
+	-- commas will be inserted when the rendered number is greater than or equal
+	-- to 1000.
+	SuffixesScale: number?,
+
+	-- Set the suffix index which will be used for the value zero. If this is not
+	-- provided, zero will default to the smallest suffix available.
+	SuffixForZero: number?
+
+): string
+	local Result = FormatSpecial(Number)
+	if not Result then
+		local Abs = math.abs(Number)
+
+		-- @RU:TODO The most generic thing we could do next is remove SufScale and
+		-- make it be obtained from the SuffixesTable instead so that it can just
+		-- be data instead of baked into the algorithm. But we'll do that another
+		-- time, and it could negatively impact performance which is unfortunate.
+		local SufScale = SuffixesScale or 3
+		local SufIndex
+		if Abs == 0 and SuffixForZero then
+			SufIndex = SuffixForZero
+		else
+			SufIndex = math.log10(Abs) // SufScale
+		end
+
+		-- If a suffix for this scale is not present in the table, the closest
+		-- provided suffix which is smaller than the value will be used, otherwise
+		-- the closest suffix which is larger will be used.
+		local Suffixes = SuffixesTable or Module.FormatSuffixesTable
+		if not Suffixes[SufIndex] then
+			local ClosestOffsetLo =  math.huge
+			local ClosestOffsetHi = -math.huge
+			local ClosestIndexLo
+			local ClosestIndexHi
+			for Index in Suffixes do
+				local Offset = SufIndex-Index
+				if Offset > 0 then
+					if ClosestOffsetLo >= Offset then
+						ClosestOffsetLo = Offset
+						ClosestIndexLo = Index
+					end
+				else
+					if ClosestOffsetHi <= Offset then
+						ClosestOffsetHi = Offset
+						ClosestIndexHi = Index
+					end
+				end
+			end
+			SufIndex = ClosestIndexLo or ClosestIndexHi
+		end
+
+		-- Render the integer part. Separate digits with commas if needed.
+		local Value = Abs / math.pow(10, SufIndex*SufScale)
+		local Chars = FormatCommaUInt(math.floor(Value))
+
+		-- Render the decimal part, if the precision allows it. If the decimal is
+		-- being padded, it may render only the decimal point with no numbers
+		-- following.
+		local DesiredMaxPrecision = MaxDecimalPrecision or (SufScale-2)
+		local AvailableDigits = SufScale + math.max(0, DesiredMaxPrecision-(SufScale-2))
+		local UsedDigits = (if Value < 10 then 0 else math.floor(math.log10(Value))) + 1
+		local AssignedDigits = math.min(
+			DesiredMaxPrecision + 1, -- Add 1 to include decimal point
+			AvailableDigits - UsedDigits)
+		if AssignedDigits > 0 then
+			local LastNonZeroAt = #Chars
+			Chars[#Chars+1] = "."
+			local Precision = AssignedDigits-1
+			if Precision > 0 then
+				local Rounded = math.floor(Value * math.pow(10, Precision))
+				for DigitMagnitude = Precision-1, 0, -1 do
+					local Scale = math.pow(10, DigitMagnitude)
+					local Digit = (Rounded // Scale) % 10
+					Chars[#Chars+1] = string.char(48 + Digit)
+					if Digit > 0 then
+						LastNonZeroAt = #Chars
+					end
+				end
+			end
+			if not ForcePadDecimals then
+				for Index = #Chars, LastNonZeroAt+1, -1 do
+					Chars[Index] = nil
+				end
+			end
+		end
+
+		Result = table.concat(Chars)..Suffixes[SufIndex]
+		if math.sign(Number) == -1 then
+			Result = "-"..Result
+		end
+	end
+	return Result :: string
+end
+--[[ Test code
+print("FORMAT - MAIN TESTS")
+for Log1000 = 1, 11 do
+	for _, Number in {1, 10, 100, 257, 1.2345, 10.2345, 100.2345, -1.2345} do
+		local Num = Number * math.pow(1000, Log1000)
+		print(("%20d: %7s, %s"):format(
+			Num,
+			Module.FormatCompact(Num), -- Should have correct compact.
+			Module.FormatCommaInt(Num))) -- Should have correct commas and 0s.
+	end
+end
+print("FORMAT - ADDITIONAL TESTS")
+local TestTable = {[-1] = "VerySmall"; [0] = "Small"; [1] = "Large";}
+print(Module.FormatCompact(0)) -- "0"
+print(Module.FormatCompact(0, nil, nil, 0, TestTable)) -- "0VerySmall"
+print(Module.FormatCompact(0, nil, nil, 0, TestTable, nil, 0)) -- "0Small"
+print(Module.FormatCompact(  0.12345, 0, nil, 0, TestTable, 4)) -- "1,234VerySmall"
+print(Module.FormatCompact(  1_234.5, 0, nil, 0, TestTable, 4)) -- "1,234Small"
+print(Module.FormatCompact(123_456.7, 0, nil, 0, TestTable, 4)) -- "12.3Large"
+print(Module.FormatCompact(1.00000, 4, false)) -- "1"
+print(Module.FormatCompact(1.00000, 4,  true)) -- "1.0000"
+--]]
+
+--
 -- Remote creation helper
 --
 -- Use like:
@@ -1422,7 +1706,9 @@ function Module.MakeRemotes<T>(
 					Connect = function() return {Disconnect = function() end} end
 				};
 			} :: any
-			Remotes_Iterable[Key] = Remote
+			if not table.isfrozen(Remotes_Iterable) then
+				Remotes_Iterable[Key] = Remote
+			end
 			return Remote
 		end,
 	})
@@ -1817,7 +2103,7 @@ do
 	function BulkMoveToMeta.Apply(BMT: BulkMoveTo): boolean
 		local DidMove = BMT.Index > 0
 		if DidMove then
-			workspace:BulkMoveTo(BMT.Parts, BMT.CFrames)
+			workspace:BulkMoveTo(BMT.Parts :: {Instance}, BMT.CFrames)
 			BMT.Index = 0
 			table.clear(BMT.Parts)
 			table.clear(BMT.CFrames)
@@ -2582,33 +2868,46 @@ Anim
 Anim:Aim(Target):Compute(Delta, true)
 --]]
 --
+-- Create the anim using one of the following functions (retained or immediate):
+--[[
+Anim = AnimNew(...)
+Anim = AnimImm(Anim, ...)
+--]]
+--
 export type Anim = {
 	-- current value of the animation
 	Value: number;
-	Dirty: boolean; -- Set only when using Anim:Consume()
-	Delta: number; -- Set only when using Anim:Consume()
+	Dirty: boolean;-- Set by Anim:Consume(): true if Value changed, true if no previous value.
+	Delta: number; -- Set by Anim:Consume(): amount Value changed, 0 if no previous value.
 
 	-- internal state
 	Duration: number;
 	Start: number;
 	Target: number;
 	Elapsed: number?; -- only set when an animation is active
-	Easer: AnimEaser?; -- custom easing function
+	Easer: AnimEaser?; -- custom easing function, takes precedence over EaseStyle
 	EaseStyle: Enum.EasingStyle?; -- builtin easing function using TweenService
-	EaseDir: Enum.EasingDirection?;
+	EaseDir: Enum.EasingDirection?; -- easing direction used only with EaseStyle
 	Cached_Value: number?;
 
-	-- methods
+	-- general methods
 	Aim: (Anim: Anim, Target: number)->(Anim);
 	AimFrom: (Anim: Anim, Target: number, Start: number)->(Anim);
 	Compute: (Anim: Anim, Delta: number)->(Anim);
 	Consume: (Anim: Anim)->(Anim);
 	Eval: (Anim: Anim, Delta: number, Target: number)->(Anim);
+	IsDone: (Anim: Anim, Target: number?)->(boolean);
+
+	-- setter methods
 	SetDuration: (Anim: Anim, Duration: number)->(Anim);
+	SetEasing: (
+		Anim: Anim,
+		EaseStyle: Enum.EasingStyle? | AnimEaser?,
+		EaseDir: Enum.EasingDirection?
+	)->(Anim);
 	SetEaser: (Anim: Anim, Easer: AnimEaser)->(Anim);
 	SetEaseStyle: (Anim: Anim, EaseStyle: Enum.EasingStyle?)->(Anim);
 	SetEaseDir: (Anim: Anim, EaseDir: Enum.EasingDirection?)->(Anim);
-	IsDone: (Anim: Anim, Target: number?)->(boolean);
 }
 -- The Easer function is allowed to read the following fields from Anim:
 --
@@ -2619,8 +2918,8 @@ export type Anim = {
 -- .EaseStyle
 -- .EaseDir
 --
--- And it should return the linear progress [0-1] of the animation, which will
--- be used to lerp .Start to .Target.
+-- And it should return the linear progress [0-1] inclusive of the animation,
+-- which will be used to lerp .Start to .Target.
 export type AnimEaser =
 	(Progress: number, Anim: Anim, Delta: number, ConstantSpeed: boolean?)->(number)
 do
@@ -2648,6 +2947,36 @@ do
 		} :: Anim, AnimMeta) :: any
 	end
 
+	-- When calling this function, the duration and easing style properties will
+	-- be set only the first time the anim is created. If you want to change those
+	-- values dynamically, you should set them with chained methods:
+	--[[
+	Anim = Module.AnimImm(Anim, InitialValue)
+		:SetEasing(EaseStyle, EaseDir)
+		:SetDuration(Duration)
+	--]]
+	function Module.AnimImm(
+		Anim: Anim?,
+		Value: number?,
+		Duration: number?,
+		EaseStyle: Enum.EasingStyle? | AnimEaser?,
+		EaseDir: Enum.EasingDirection?
+	): Anim
+		if not Anim then
+			local EaseType = typeof(EaseStyle)
+			Anim = setmetatable({
+				Duration = Duration;
+				Value = Value;
+				Start = Value;
+				Target = Value;
+				Easer = if EaseType == "function" then EaseStyle else nil;
+				EaseStyle = if EaseType == "Enum" then EaseStyle else nil;
+				EaseDir = EaseDir;
+			} :: Anim, AnimMeta) :: any
+		end
+		return Anim :: Anim
+	end
+
 	function AnimMeta.Aim(Anim: Anim, Target: number): Anim
 		if Anim.Target ~= Target then
 			Anim.Target = Target
@@ -2667,6 +2996,10 @@ do
 	function AnimMeta.Compute(Anim: Anim, Delta: number, ConstantSpeed: boolean?): Anim
 		if Anim.Elapsed then
 			Anim.Elapsed += Delta
+			if not Anim.Duration then
+				warn(debug.traceback("Anim is missing a duration!"))
+				Anim.Duration = 0
+			end
 			local Duration =
 				if ConstantSpeed then math.abs(Anim.Target - Anim.Start) / Anim.Duration
 				else Anim.Duration
@@ -2705,8 +3038,25 @@ do
 		return Anim
 	end
 
+	function AnimMeta.IsDone(Anim: Anim, Target: number?)
+		return
+			(Anim.Value == Anim.Target) and
+			((not Target) or (Target == Anim.Target))
+	end
+
 	function AnimMeta.SetDuration(Anim: Anim, Duration: number)
 		Anim.Duration = Duration
+		return Anim
+	end
+	function AnimMeta.SetEasing(
+		Anim: Anim,
+		EaseStyle: Enum.EasingStyle? | AnimEaser?,
+		EaseDir: Enum.EasingDirection?
+	)
+		local EaseType = typeof(EaseStyle)
+		Anim.Easer = if EaseType == "function" then EaseStyle :: AnimEaser else nil
+		Anim.EaseStyle = if EaseType == "Enum" then EaseStyle :: Enum.EasingStyle else nil
+		Anim.EaseDir = EaseDir
 		return Anim
 	end
 	function AnimMeta.SetEaseDir(Anim: Anim, EaseDir: Enum.EasingDirection?)
@@ -2720,11 +3070,6 @@ do
 	function AnimMeta.SetEaser(Anim: Anim, Easer: AnimEaser)
 		Anim.Easer = Easer
 		return Anim
-	end
-	function AnimMeta.IsDone(Anim: Anim, Target: number?)
-		return
-			(Anim.Value == Anim.Target) and
-			((not Target) or (Target == Anim.Target))
 	end
 end
 
@@ -2740,6 +3085,7 @@ export type GuiStateEye = {
 	Dirty: boolean;
 	Conn: RBXScriptConnection;
 	Destroy: (GSE: GuiStateEye)->();
+	Callback: (()->())?;
 }
 do
 	local GSEMeta: GuiStateEye =
@@ -2761,6 +3107,9 @@ do
 				GSE.Hot = GSE.GuiState == Enum.GuiState.Hover
 				GSE.Act = GSE.GuiState == Enum.GuiState.Press
 				GSE.Dirty = true
+				if GSE.Callback then
+					GSE.Callback()
+				end
 			end
 		end
 		GSE.Conn = Button:GetPropertyChangedSignal("GuiState"):Connect(GuiStateChanged)
@@ -2819,7 +3168,7 @@ do
 	function Module.TextMetricsNew(FontFace: Font | Enum.Font, RichText: boolean?): TextMetrics
 		if typeof(FontFace) ~= "Font" then
 			if FontFace == Enum.Font.Unknown then
-				error("Enum.Font.Unknown is not valid. Must provide Font object instead.", 2)
+				error("Enum.Font.Unknown is not valid. Must provide a valid Font enum or a Font object instead.", 2)
 			else
 				FontFace = Font.fromEnum(FontFace :: Enum.Font)
 			end
@@ -2865,10 +3214,10 @@ do
 		DummyLabelRich.Interactable = false;
 		DummyLabelRich.Size = UDim2.fromScale(1, 1);
 		DummyLabelRich.Position = UDim2.fromScale(-100, -100);
-			-- If this is queried with FrameSizeX == math.huge, or an equivalently
-			-- large value, the label will have infinite or very large size, and so
-			-- therefore may cover the entire screen. So we have to fix this by making
-			-- the label's background transparent.
+		-- If this is queried with FrameSizeX == math.huge, or an equivalently
+		-- large value, the label will have infinite or very large size, and so
+		-- therefore may cover the entire screen. So we have to fix this by making
+		-- the label's background transparent.
 		DummyLabelRich.BackgroundTransparency = 1;
 		DummyLabelRich.Parent = DummyGui;
 
@@ -2884,9 +3233,10 @@ do
 		FrameSizeX: number
 	): boolean
 
-		-- Need to clamp frame sizes since UDim2's offset range is 32-bit int.
-		-- It's signed, so while negative values are valid, they aren't useful.
-		FrameSizeX = math.clamp(FrameSizeX, 0, 2147483647)
+		-- Need to clamp frame sizes since UDim2's offset range is 32-bit int. The
+		-- input may be negative, so the size of the input will be used instead
+		-- of relying on a positive sign.
+		FrameSizeX = math.clamp(math.abs(FrameSizeX), 0, 2147483647)
 
 		local BoundsToUpdate: Vector2?
 
@@ -2964,7 +3314,7 @@ do
 			end
 		end
 
-		TM.Dirty = true
+		TM.Dirty = Dirty
 		return Dirty
 	end
 end
@@ -3169,7 +3519,8 @@ export type BulkPositioner = {
 	Clear: (BP: BulkPositioner)->(BulkPositioner);
 }
 do
-	local BPMeta: BulkPositioner = (function(): any local c = {}; c.__index = c; return c; end)()
+	local BPMeta: BulkPositioner =
+		(function(): any local c = {}; c.__index = c; return c; end)()
 
 	function Module.BP_New(): BulkPositioner
 		return setmetatable({
@@ -3216,6 +3567,471 @@ do
 		table.clear(BP.GuiObjects)
 		table.clear(BP.Positions)
 		return BP
+	end
+end
+
+-- Useful for multiplexing control over a single API or piece of state, such as
+-- a boolean property on an instance that wants to be modified by many different
+-- game systems.
+type Arbiter = {
+	Values: {any};
+	HasValues: boolean;
+
+	-- Callbacks can read Arbiter.HasValues to quickly get a boolean indicating
+	-- if a value is present or not, otherwise they can manually read the Values
+	-- array.
+	CallbackOnce: ((A: Arbiter)->())?;
+	CallbackEvery: ((A: Arbiter)->())?;
+
+	-- Set Callbacks easily.
+	Once: (A: Arbiter, CallbackOnce: ((A: Arbiter)->())?)->Arbiter;
+	Every: (A: Arbiter, CallbackEvery: ((A: Arbiter)->())?)->Arbiter;
+
+	-- Register a handle which can be released indirectly on its own.
+	Grab: (A: Arbiter)->(ArbiterHandle);
+
+	-- Register values which need to be directly added/removed/set. Returns
+	-- true if a change was made (a value was actually added or removed).
+	Add: (A: Arbiter, Value: any)->(boolean);
+	Remove: (A: Arbiter, Value: any)->(boolean);
+	Set: (A: Arbiter, Value: any, Enabled: any?)->(boolean);
+
+	-- Reset all values in the Arbiter. Returns true if a change was made(a value
+	-- was actually added or removed).
+	Clear: (A: Arbiter)->(boolean);
+
+	-- Resets all values in the Arbiter, but does not call the update functions!
+	-- Returns true if a change was made (a value was actually added or removed).
+	Destroy: (A: Arbiter)->(boolean);
+
+	-- Update the Arbiter, running CallbackEvery always, and CallbackOnce only if
+	-- something changed. Returns true if HasValues was changed.
+	Update: (A: Arbiter)->(boolean);
+
+	-- Update the Arbiter, running both CallbackEvery and CallbackOnce always.
+	-- Returns true if HasValues was changed.
+	UpdateForce: (A: Arbiter)->(boolean);
+}
+type ArbiterHandle = {
+	Arbiter: Arbiter;
+	Destroy: (AH: ArbiterHandle)->();
+}
+do
+	local AMeta: Arbiter =
+		(function(): any local c = {}; c.__index = c; return c end)()
+	local AHMeta: ArbiterHandle =
+		(function(): any local c = {}; c.__index = c; return c end)()
+
+	function AHMeta.Destroy(AH: ArbiterHandle)
+		AH.Arbiter:Remove(AH)
+	end
+
+	function Module.ArbiterNew()
+		local A: Arbiter = setmetatable({
+			Values = {};
+			HasValues = false;
+		} :: Arbiter, AMeta) :: any
+		return A
+	end
+	function AMeta.Once(A: Arbiter, CallbackOnce: ((A: Arbiter)->())?)
+		A.CallbackOnce = CallbackOnce
+		return A
+	end
+	function AMeta.Every(A: Arbiter, CallbackEvery: ((A: Arbiter)->())?)
+		A.CallbackEvery = CallbackEvery
+		return A
+	end
+
+	function AMeta.Grab(A: Arbiter): ArbiterHandle
+		local AH: ArbiterHandle = setmetatable({
+			Arbiter = A;
+		} :: ArbiterHandle, AHMeta) :: any
+		A:Add(AH)
+		return AH
+	end
+	function AMeta.Add(A: Arbiter, Value: any): boolean
+		local Changed = false
+		if not table.find(A.Values, Value) then
+			A.Values[#A.Values+1] = Value
+			A:Update()
+			Changed = true
+		end
+		return Changed
+	end
+	function AMeta.Remove(A: Arbiter, Value: any): boolean
+		local Changed = false
+		local Index = table.find(A.Values, Value)
+		if Index then
+			table.remove(A.Values, Index)
+			A:Update()
+			Changed = true
+		end
+		return Changed
+	end
+	function AMeta.Set(A: Arbiter, Value: any, Enabled: any?): boolean
+		local Changed = false
+		local Index = table.find(A.Values, Value)
+		if Enabled then
+			if not Index then
+				A.Values[#A.Values+1] = Value
+				A:Update()
+				Changed = true
+			end
+		else
+			if Index then
+				table.remove(A.Values, Index)
+				A:Update()
+				Changed = true
+			end
+		end
+		return Changed
+	end
+	function AMeta.Clear(A: Arbiter): boolean
+		local HadValues = A.Values[1] ~= nil
+		table.clear(A.Values)
+		A:Update()
+		return HadValues
+	end
+	function AMeta.Destroy(A: Arbiter): boolean
+		local HadValues = A.Values[1] ~= nil
+		table.clear(A.Values)
+		return HadValues
+	end
+
+	function AMeta.Update(A: Arbiter): boolean
+		local Changed = false
+		local HasValues = A.Values[1] ~= nil
+		if HasValues then
+			if not A.HasValues then
+				A.HasValues = true
+				Changed = true
+				if A.CallbackOnce then
+					A:CallbackOnce()
+				end
+			end
+		else
+			if A.HasValues then
+				A.HasValues = false
+				Changed = true
+				if A.CallbackOnce then
+					A:CallbackOnce()
+				end
+			end
+		end
+		if A.CallbackEvery then
+			A:CallbackEvery()
+		end
+		return Changed
+	end
+	function AMeta.UpdateForce(A: Arbiter): boolean
+		local HasValues = A.Values[1] ~= nil
+		local Changed = A.HasValues ~= HasValues
+		A.HasValues = HasValues
+		if A.CallbackOnce then
+			A:CallbackOnce()
+		end
+		if A.CallbackEvery then
+			A:CallbackEvery()
+		end
+		return Changed
+	end
+end
+
+export type SurfaceBillboard = {
+	Part: BasePart;
+	Gui: SurfaceGui;
+
+	Adornee: Instance;
+	AnchorPoint: Vector2;
+	Size: Vector2;
+	PixelsPerStud: number;
+	StudsOffsetWorld: Vector3;
+	StudsOffsetCamera: Vector3;
+	ExtentsOffsetWorld: Vector3;
+	ExtentsOffsetCamera: Vector3;
+
+	CachedPixelsPerStud: number;
+	CachedGuiSize: Vector2;
+	CachedPartSize: Vector3;
+	CachedEnabled: boolean;
+
+	-- Used only with update mode auto.
+	UpdateMode: "auto" | "manual";
+	Node: DLL_Node<{ SB: SurfaceBillboard; }>?;
+
+	Update: (
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		BBCFrame: CFrame?,
+		BBSize: Vector3?,
+		BMT: BulkMoveTo?
+	)->(SurfaceBillboard);
+	Set: (SB: SurfaceBillboard, Props: SurfaceBillboardProps)->SurfaceBillboard;
+	SetProp: (SB: SurfaceBillboard, Name: string, Value: any)->SurfaceBillboard;
+	Destroy: (SB: SurfaceBillboard)->();
+}
+export type SurfaceBillboardProps = {
+	-- custom
+	Adornee: Instance?;
+	AnchorPoint: Vector2?;
+	Size: Vector2?;
+	PixelsPerStud: number?;
+	StudsOffsetWorld: Vector3?;
+	StudsOffsetCamera: Vector3?;
+	ExtentsOffsetWorld: Vector3?;
+	ExtentsOffsetCamera: Vector3?;
+
+	-- part parent
+	Parent: Instance?;
+
+	-- surfacegui props
+	ZOffset: number?;
+	ClipsDescendants: boolean?;
+	LightInfluence: number?;
+	MaxDistance: number?;
+	Brightness: boolean?;
+}
+do
+	local BillboardsFolder
+	if game:GetService("RunService"):IsClient() then
+		BillboardsFolder = Instance.new("Folder")
+		BillboardsFolder.Name = "SurfaceBillboards"
+	end
+
+	local DefaultProps: SurfaceBillboardProps = table.freeze({
+		Adornee = nil;
+		AnchorPoint = Vector2.new(0.5, 0.5);
+		Size = Vector2.new(100, 100);
+		PixelsPerStud = 20;
+		StudsOffsetWorld = Vector3.zero;
+		StudsOffsetCamera = Vector3.zero;
+		ExtentsOffsetWorld = Vector3.zero;
+		ExtentsOffsetCamera = Vector3.zero;
+
+		Parent = BillboardsFolder;
+		ZOffset = 0;
+		ClipsDescendants = false;
+		LightInfluence = 0;
+		MaxDistance = math.huge;
+	}) :: SurfaceBillboardProps
+
+	local SBMeta: SurfaceBillboard =
+		(function(): any local c = {}; c.__index = c; return c end)()
+
+	function SBMeta.Update(
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		BBCFrame: CFrame?,
+		BBSize: Vector3?,
+		BMT: BulkMoveTo?
+	)
+		local SIZE_Z = 0.1
+
+		if SB.CachedPixelsPerStud ~= SB.PixelsPerStud or
+			SB.CachedGuiSize ~= SB.Size
+		then
+			SB.CachedPixelsPerStud = SB.PixelsPerStud
+			SB.CachedGuiSize = SB.Size
+			SB.CachedPartSize = Vector3.new(
+				SB.CachedGuiSize.X/SB.PixelsPerStud,
+				SB.CachedGuiSize.Y/SB.PixelsPerStud,
+				SIZE_Z)
+			SB.Gui.CanvasSize = SB.CachedGuiSize
+			SB.Part.Size = SB.CachedPartSize
+		end
+
+		local _BBCFrame: CFrame, _BBSize: Vector3
+		if BBCFrame and BBSize then
+			_BBCFrame = BBCFrame
+			_BBSize = BBSize
+		elseif not SB.Adornee then
+			_BBCFrame = BBCFrame or CFrame.identity
+			_BBSize = BBSize or Vector3.zero
+		elseif SB.Adornee:IsA("Model") then
+			_BBCFrame, _BBSize = SB.Adornee:GetBoundingBox()
+		elseif SB.Adornee:IsA("BasePart") then
+			_BBCFrame = SB.Adornee.CFrame
+			_BBSize = SB.Adornee.Size
+		elseif SB.Adornee:IsA("Bone") then
+			_BBCFrame = SB.Adornee.TransformedWorldCFrame
+			_BBSize = BBSize or Vector3.zero
+		elseif SB.Adornee:IsA("Attachment") then
+			_BBCFrame = SB.Adornee.WorldCFrame
+			_BBSize = BBSize or Vector3.zero
+		else
+			_BBCFrame = BBCFrame or CFrame.identity
+			_BBSize = BBSize or Vector3.zero
+		end
+
+		local CamBBMin, CamBBMax = Module.FastAABB(
+			CameraCFrame:ToObjectSpace(_BBCFrame), _BBSize)
+		local CamBBSize = CamBBMax - CamBBMin
+
+		local RelativeOffsets =
+			Vector3.new(
+				SB.CachedPartSize.X*(SB.AnchorPoint.X-0.5),
+				SB.CachedPartSize.Y*(SB.AnchorPoint.Y-0.5),
+				SIZE_Z*0.5) +
+			SB.StudsOffsetCamera +
+			SB.ExtentsOffsetCamera*CamBBSize*0.5
+
+		local Position =
+			_BBCFrame.Position +
+			SB.StudsOffsetWorld +
+			SB.ExtentsOffsetWorld*_BBSize*0.5 +
+			CameraCFrame:VectorToWorldSpace(RelativeOffsets)
+
+		local Enabled = false
+		if (Position-CameraCFrame.Position).Magnitude <= SB.Gui.MaxDistance then
+			Enabled = true
+			local NewCFrame = CFrame.lookAlong(
+				Position,
+				CameraCFrame.ZVector,
+				CameraCFrame.YVector)
+			if BMT then
+				BMT:Add(SB.Part, NewCFrame)
+			else
+				SB.Part.CFrame = NewCFrame
+			end
+		end
+		if SB.CachedEnabled ~= Enabled then
+			SB.CachedEnabled = Enabled
+			SB.Gui.Enabled = Enabled
+		end
+
+		return SB
+	end
+
+	local SurfaceGuiProps = table.freeze({
+		ZOffset = true;
+		ClipsDescendants = true;
+		LightInfluence = true;
+		MaxDistance = true;
+		Brightness = true;
+	} :: {[string]: boolean})
+	function SBMeta.SetProp(SB: SurfaceBillboard, Name: string, Value: any)
+		if SurfaceGuiProps[Name] then
+			local GuiA = SB.Gui :: any
+			if GuiA[Name] ~= Value then
+				GuiA[Name] = Value
+			end
+		elseif Name == "Parent" then
+			if SB.Part.Parent ~= Value then
+				SB.Part.Parent = Value
+			end
+		else
+			(SB :: any)[Name] = Value
+		end
+		return SB
+	end
+	function SBMeta.Set(SB: SurfaceBillboard, Props: SurfaceBillboardProps)
+		for Name, Value in Props :: {[string]: any} do
+			SB:SetProp(Name, Value)
+		end
+		return SB
+	end
+	function SBMeta.Destroy(SB: SurfaceBillboard)
+		SB.Part:Destroy()
+		SB.Gui:Destroy()
+		local Node = SB.Node
+		if Node then
+			SB.Node = nil
+			Module.DLL_Remove(Node :: any)
+		end
+	end
+
+	local AutoUpdateBillboards: DLL_Node<{ SB: SurfaceBillboard; }> =
+		Module.DLL_Create() :: any
+	local UpdateConnection = nil :: RBXScriptConnection?
+
+	local function AutoUpdateSurfaceBillboards()
+		debug.profilebegin("AutoUpdateSurfaceBillboards")
+		local Camera = workspace.CurrentCamera
+		if Camera then
+
+			-- @RU:TODO Do we need to account for VR here by calling
+			-- Camera:GetRenderCFrame()? Or do VR users prefer billboards to be
+			-- less responsive to their head movements?
+			local CameraCFrame = Camera.CFrame
+			local BMT = Module.BMT_New()
+
+			local DLL_Current = AutoUpdateBillboards.DLL_Next
+			while DLL_Current ~= AutoUpdateBillboards do
+				local Node = DLL_Current
+				DLL_Current = DLL_Current.DLL_Next
+
+				Node.SB:Update(CameraCFrame, nil, nil, BMT)
+			end
+			BMT:Apply()
+		end
+		debug.profileend()
+	end
+
+	function Module.SurfaceBillboardNew(
+		Props: SurfaceBillboardProps?,
+
+		-- Defaults to auto.
+		UpdateMode: ("auto" | "manual")?
+	)
+		assert(game:GetService("RunService"):IsClient(),
+			"SurfaceBillboards can only be created on the client!")
+
+		local SB: SurfaceBillboard =
+			setmetatable({} :: SurfaceBillboard, SBMeta) :: any
+
+		local Part = Instance.new("Part")
+		Part.CastShadow = false
+		Part.Transparency = 1
+		Part.Anchored = true
+		Part.CanCollide = false
+		Part.CanQuery = false
+		Part.CanTouch = false
+		SB.Part = Part
+
+		local Gui = Instance.new("SurfaceGui")
+		Gui.Parent = SB.Part
+		Gui.Adornee = SB.Part
+		Gui.ResetOnSpawn = false
+		Gui.Active = false
+		Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		SB.Gui = Gui
+
+		for Name, Default in DefaultProps :: {[string]: any} do
+			if Name ~= "Parent" then
+				local Value =
+					if Props then (Props :: {[string]: any})[Name] else nil
+				if Value == nil then
+					Value = Default
+				end
+				SB:SetProp(Name, Value)
+			end
+		end
+		local Parent = DefaultProps.Parent
+		if Props then
+			for Name, Value in Props :: {[string]: any} do
+				if (DefaultProps :: {[string]: any})[Name] == nil then
+					SB:SetProp(Name, Value)
+				end
+			end
+			if Props.Parent ~= nil then
+				Parent = Props.Parent
+			end
+		end
+		SB:SetProp("Parent", Parent)
+
+		SB.UpdateMode = if UpdateMode ~= nil then UpdateMode else "auto"
+		if SB.UpdateMode == "auto" then
+			SB.Node = {SB = SB} :: DLL_Node<{ SB: SurfaceBillboard; }>
+			assert(SB.Node)
+			Module.DLL_SentinelAppendLast(AutoUpdateBillboards :: any, SB.Node :: any)
+			if not UpdateConnection then
+				UpdateConnection = game:GetService("RunService").RenderStepped
+					:Connect(AutoUpdateSurfaceBillboards)
+				assert(BillboardsFolder).Parent = workspace
+			end
+		end
+
+		return SB
 	end
 end
 
