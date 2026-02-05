@@ -3737,6 +3737,34 @@ do
 	end
 end
 
+--
+-- SurfaceBillboard
+--
+-- A helper using a fixed size SurfaceGui to replace BillboardGuis that scale
+-- with distance.
+--
+-- This is useful because dynamically scaling BillboardGuis put a lot of
+-- pressure on text rendering (due to TextScaled which can waste a lot of glyph
+-- atlas space), and are also subject to rendering artifacts that are caused by
+-- text having a maximum size of 100 (meaning when you look at such a gui up
+-- close the text will be smaller than everything else). Using a SurfaceGui lets
+-- us render to a fixed size texture always, which will then be scaled up/down
+-- based on camera distance without affecting the appearance of the UI or
+-- putting extra pressure on the UI renderer.
+--
+-- There are two main ways this alternative approach could have bad performance:
+-- 1) Querying adornee's bounding box.
+-- 2) Updating the part's CFrame.
+--
+-- These can be fixed in the following ways respectively:
+-- 1) Use UpdateMode="manual", and cache the bounding box in whatever way is
+-- appropriate for the adornee. Then pass the bounding box's CFrame and Size to
+-- the Update function.
+-- 2) Batch together part updates using workspace:BulkMoveTo(), and hide
+-- billboards that are far away or otherwise shouldn't be visible by setting the
+-- Hidden argument when calling the Update function. (You can also set the
+-- MaxDistance value.)
+--
 export type SurfaceBillboard = {
 	Part: BasePart;
 	Gui: SurfaceGui;
@@ -3754,18 +3782,26 @@ export type SurfaceBillboard = {
 	CachedGuiSize: Vector2;
 	CachedPartSize: Vector3;
 	CachedEnabled: boolean;
+	CachedMaxDistance: number;
 
-	-- Used only with update mode auto.
 	UpdateMode: "auto" | "manual";
+
+	-- Used only with update mode auto. Automatically updated SurfaceBillboards
+	-- are stored in a linked list so that creation & destruction are O(1).
 	Node: DLL_Node<{ SB: SurfaceBillboard; }>?;
 
+	-- This function returns the new part CFrame (that should be applied to
+	-- SurfaceBillboard.Part), if an update is required. It is returned instead
+	-- of being set internally so that you can batch the CFrame set in whichever
+	-- way you prefer.
 	Update: (
 		SB: SurfaceBillboard,
 		CameraCFrame: CFrame,
-		BBCFrame: CFrame?,
-		BBSize: Vector3?,
-		BMT: BulkMoveTo?
-	)->(SurfaceBillboard);
+		Hidden: boolean?, -- If set, the gui will be hidden.
+		BBCFrame: CFrame?, -- Specify both BBCFrame and BBSize to improve perf.
+		BBSize: Vector3?
+	)->(CFrame?); -- Returns the new part CFrame if it needs to be updated.
+
 	Set: (SB: SurfaceBillboard, Props: SurfaceBillboardProps)->SurfaceBillboard;
 	SetProp: (SB: SurfaceBillboard, Name: string, Value: any)->SurfaceBillboard;
 	Destroy: (SB: SurfaceBillboard)->();
@@ -3821,92 +3857,92 @@ do
 	function SBMeta.Update(
 		SB: SurfaceBillboard,
 		CameraCFrame: CFrame,
+		Hidden: boolean?,
 		BBCFrame: CFrame?,
-		BBSize: Vector3?,
-		BMT: BulkMoveTo?
-	)
-		local SIZE_Z = 0.1
-
-		if SB.CachedPixelsPerStud ~= SB.PixelsPerStud or
-			SB.CachedGuiSize ~= SB.Size
-		then
-			SB.CachedPixelsPerStud = SB.PixelsPerStud
-			SB.CachedGuiSize = SB.Size
-			SB.CachedPartSize = Vector3.new(
-				SB.CachedGuiSize.X/SB.PixelsPerStud,
-				SB.CachedGuiSize.Y/SB.PixelsPerStud,
-				SIZE_Z)
-			SB.Gui.CanvasSize = SB.CachedGuiSize
-			SB.Part.Size = SB.CachedPartSize
-		end
-
-		local _BBCFrame: CFrame, _BBSize: Vector3
-		if BBCFrame and BBSize then
-			_BBCFrame = BBCFrame
-			_BBSize = BBSize
-		elseif not SB.Adornee then
-			_BBCFrame = BBCFrame or CFrame.identity
-			_BBSize = BBSize or Vector3.zero
-		elseif SB.Adornee:IsA("Model") then
-			_BBCFrame, _BBSize = SB.Adornee:GetBoundingBox()
-		elseif SB.Adornee:IsA("BasePart") then
-			_BBCFrame = SB.Adornee.CFrame
-			_BBSize = SB.Adornee.Size
-		elseif SB.Adornee:IsA("Bone") then
-			_BBCFrame = SB.Adornee.TransformedWorldCFrame
-			_BBSize = BBSize or Vector3.zero
-		elseif SB.Adornee:IsA("Attachment") then
-			_BBCFrame = SB.Adornee.WorldCFrame
-			_BBSize = BBSize or Vector3.zero
-		else
-			_BBCFrame = BBCFrame or CFrame.identity
-			_BBSize = BBSize or Vector3.zero
-		end
-
-		local CamBBMin, CamBBMax = Module.FastAABB(
-			CameraCFrame:ToObjectSpace(_BBCFrame), _BBSize)
-		local CamBBSize = CamBBMax - CamBBMin
-
-		local RelativeOffsets =
-			Vector3.new(
-				SB.CachedPartSize.X*(SB.AnchorPoint.X-0.5),
-				SB.CachedPartSize.Y*(SB.AnchorPoint.Y-0.5),
-				SIZE_Z*0.5) +
-			SB.StudsOffsetCamera +
-			SB.ExtentsOffsetCamera*CamBBSize*0.5
-
-		local Position =
-			_BBCFrame.Position +
-			SB.StudsOffsetWorld +
-			SB.ExtentsOffsetWorld*_BBSize*0.5 +
-			CameraCFrame:VectorToWorldSpace(RelativeOffsets)
-
+		BBSize: Vector3?
+	): CFrame?
+		local NewCFrame
 		local Enabled = false
-		if (Position-CameraCFrame.Position).Magnitude <= SB.Gui.MaxDistance then
-			Enabled = true
-			local NewCFrame = CFrame.lookAlong(
-				Position,
-				CameraCFrame.ZVector,
-				CameraCFrame.YVector)
-			if BMT then
-				BMT:Add(SB.Part, NewCFrame)
+		if not Hidden then
+
+			local SIZE_Z = 0.1
+
+			if SB.CachedPixelsPerStud ~= SB.PixelsPerStud or
+				SB.CachedGuiSize ~= SB.Size
+			then
+				SB.CachedPixelsPerStud = SB.PixelsPerStud
+				SB.CachedGuiSize = SB.Size
+				SB.CachedPartSize = Vector3.new(
+					SB.CachedGuiSize.X/SB.PixelsPerStud,
+					SB.CachedGuiSize.Y/SB.PixelsPerStud,
+					SIZE_Z)
+				SB.Gui.CanvasSize = SB.CachedGuiSize
+				SB.Part.Size = SB.CachedPartSize
+			end
+
+			local _BBCFrame: CFrame, _BBSize: Vector3
+			if BBCFrame and BBSize then
+				_BBCFrame = BBCFrame
+				_BBSize = BBSize
+			elseif not SB.Adornee then
+				_BBCFrame = BBCFrame or CFrame.identity
+				_BBSize = BBSize or Vector3.zero
+			elseif SB.Adornee:IsA("Model") then
+				_BBCFrame, _BBSize = SB.Adornee:GetBoundingBox()
+			elseif SB.Adornee:IsA("BasePart") then
+				_BBCFrame = SB.Adornee.CFrame
+				_BBSize = SB.Adornee.Size
+			elseif SB.Adornee:IsA("Bone") then
+				_BBCFrame = SB.Adornee.TransformedWorldCFrame
+				_BBSize = BBSize or Vector3.zero
+			elseif SB.Adornee:IsA("Attachment") then
+				_BBCFrame = SB.Adornee.WorldCFrame
+				_BBSize = BBSize or Vector3.zero
 			else
-				SB.Part.CFrame = NewCFrame
+				_BBCFrame = BBCFrame or CFrame.identity
+				_BBSize = BBSize or Vector3.zero
+			end
+
+			local CamBBMin, CamBBMax = Module.FastAABB(
+				CameraCFrame:ToObjectSpace(_BBCFrame), _BBSize)
+			local CamBBSize = CamBBMax - CamBBMin
+
+			local RelativeOffsets =
+				Vector3.new(
+					SB.CachedPartSize.X*(SB.AnchorPoint.X-0.5),
+					SB.CachedPartSize.Y*(SB.AnchorPoint.Y-0.5),
+					SIZE_Z*0.5) +
+				SB.StudsOffsetCamera +
+				SB.ExtentsOffsetCamera*CamBBSize*0.5
+
+			local Position =
+				_BBCFrame.Position +
+				SB.StudsOffsetWorld +
+				SB.ExtentsOffsetWorld*_BBSize*0.5 +
+				CameraCFrame:VectorToWorldSpace(RelativeOffsets)
+
+			if (Position-CameraCFrame.Position).Magnitude <= SB.CachedMaxDistance then
+				Enabled = true
+
+				NewCFrame = CFrame.lookAlong(
+					Position,
+					CameraCFrame.ZVector,
+					CameraCFrame.YVector)
 			end
 		end
+
 		if SB.CachedEnabled ~= Enabled then
 			SB.CachedEnabled = Enabled
 			SB.Gui.Enabled = Enabled
 		end
 
-		return SB
+		return NewCFrame
 	end
 
 	local SurfaceGuiProps = table.freeze({
 		ZOffset = true;
 		ClipsDescendants = true;
 		LightInfluence = true;
-		MaxDistance = true;
 		Brightness = true;
 	} :: {[string]: boolean})
 	function SBMeta.SetProp(SB: SurfaceBillboard, Name: string, Value: any)
@@ -3914,6 +3950,11 @@ do
 			local GuiA = SB.Gui :: any
 			if GuiA[Name] ~= Value then
 				GuiA[Name] = Value
+			end
+		elseif Name == "MaxDistance" then
+			if SB.CachedMaxDistance ~= Value then
+				SB.CachedMaxDistance = Value
+				SB.Gui.MaxDistance = Value
 			end
 		elseif Name == "Parent" then
 			if SB.Part.Parent ~= Value then
@@ -3960,8 +4001,12 @@ do
 				local Node = DLL_Current
 				DLL_Current = DLL_Current.DLL_Next
 
-				Node.SB:Update(CameraCFrame, nil, nil, BMT)
+				local NewCFrame = Node.SB:Update(CameraCFrame)
+				if NewCFrame then
+					BMT:Add(Node.SB.Part, NewCFrame)
+				end
 			end
+
 			BMT:Apply()
 		end
 		debug.profileend()
