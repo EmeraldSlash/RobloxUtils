@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 24 (2026-02-05)
+-- Version 28 (2026-02-22)
 --
 
 --
@@ -83,6 +83,7 @@
 --
 -- .FastAABB()
 -- .IsInBB()
+-- .IsInSphere()
 --
 -- .ArrayRemove()
 -- .ArrayAppend()
@@ -224,6 +225,10 @@
 -- SAM:Update()
 -- SAM:BRectInASpace()
 -- SAM:IsTopbarValid()
+--
+-- type TouchControlsObserver
+-- .TouchControlsObserverNew()
+-- TCO:Update()
 --
 -- type BulkPositioner
 -- .BP_New()
@@ -755,6 +760,19 @@ function Module.IsInBB(
 		(math.abs(Pos.X) <= (Size.X)) and
 		(math.abs(Pos.Y) <= (Size.Y)) and
 		(math.abs(Pos.Z) <= (Size.Z))
+end
+function Module.IsInCylinder(
+	CylinderCFrame: CFrame,
+	CylinderSize: Vector3,
+	Point: Vector3,
+	PointRadius: number?
+)
+	local Pos = CylinderCFrame:PointToObjectSpace(Point)
+	local PosRadius = Vector2.new(Pos.Y, Pos.Z).Magnitude
+	local Dim = math.min(CylinderSize.Y, CylinderSize.Z)
+	return
+		PosRadius <= (Dim*0.5 + (PointRadius or 0)) and
+		math.abs(Pos.X) <= (CylinderSize.X*0.5 + (PointRadius or 0))
 end
 
 --
@@ -1556,7 +1574,7 @@ function Module.FormatCompact(
 		-- If a suffix for this scale is not present in the table, the closest
 		-- provided suffix which is smaller than the value will be used, otherwise
 		-- the closest suffix which is larger will be used.
-		local Suffixes = SuffixesTable or Module.FormatSuffixesTable
+		local Suffixes: {string} = SuffixesTable or Module.FormatSuffixesTable
 		if not Suffixes[SufIndex] then
 			local ClosestOffsetLo =  math.huge
 			local ClosestOffsetHi = -math.huge
@@ -1578,6 +1596,7 @@ function Module.FormatCompact(
 			end
 			SufIndex = ClosestIndexLo or ClosestIndexHi
 		end
+		assert(SufIndex)
 
 		-- Render the integer part. Separate digits with commas if needed.
 		local Value = Abs / math.pow(10, SufIndex*SufScale)
@@ -1614,10 +1633,11 @@ function Module.FormatCompact(
 			end
 		end
 
-		Result = table.concat(Chars)..Suffixes[SufIndex]
+		local String = table.concat(Chars)..Suffixes[SufIndex]
 		if math.sign(Number) == -1 then
-			Result = "-"..Result
+			String = "-"..String
 		end
+		Result = String
 	end
 	return Result :: string
 end
@@ -2942,7 +2962,7 @@ do
 			Start = Value;
 			Target = Value;
 			Easer = if EaseType == "function" then EaseStyle else nil;
-			EaseStyle = if EaseType == "Enum" then EaseStyle else nil;
+			EaseStyle = if EaseType == "EnumItem" then EaseStyle else nil;
 			EaseDir = EaseDir;
 		} :: Anim, AnimMeta) :: any
 	end
@@ -2970,7 +2990,7 @@ do
 				Start = Value;
 				Target = Value;
 				Easer = if EaseType == "function" then EaseStyle else nil;
-				EaseStyle = if EaseType == "Enum" then EaseStyle else nil;
+				EaseStyle = if EaseType == "EnumItem" then EaseStyle else nil;
 				EaseDir = EaseDir;
 			} :: Anim, AnimMeta) :: any
 		end
@@ -3055,7 +3075,7 @@ do
 	)
 		local EaseType = typeof(EaseStyle)
 		Anim.Easer = if EaseType == "function" then EaseStyle :: AnimEaser else nil
-		Anim.EaseStyle = if EaseType == "Enum" then EaseStyle :: Enum.EasingStyle else nil
+		Anim.EaseStyle = if EaseType == "EnumItem" then EaseStyle :: Enum.EasingStyle else nil
 		Anim.EaseDir = EaseDir
 		return Anim
 	end
@@ -3573,9 +3593,10 @@ end
 -- Useful for multiplexing control over a single API or piece of state, such as
 -- a boolean property on an instance that wants to be modified by many different
 -- game systems.
-type Arbiter = {
+export type Arbiter = {
 	Values: {any};
 	HasValues: boolean;
+	Dirty: boolean;
 
 	-- Callbacks can read Arbiter.HasValues to quickly get a boolean indicating
 	-- if a value is present or not, otherwise they can manually read the Values
@@ -3630,6 +3651,7 @@ do
 		local A: Arbiter = setmetatable({
 			Values = {};
 			HasValues = false;
+			Dirty = true;
 		} :: Arbiter, AMeta) :: any
 		return A
 	end
@@ -3654,6 +3676,7 @@ do
 		if not table.find(A.Values, Value) then
 			A.Values[#A.Values+1] = Value
 			A:Update()
+			A.Dirty = true
 			Changed = true
 		end
 		return Changed
@@ -3664,6 +3687,7 @@ do
 		if Index then
 			table.remove(A.Values, Index)
 			A:Update()
+			A.Dirty = true
 			Changed = true
 		end
 		return Changed
@@ -3675,12 +3699,14 @@ do
 			if not Index then
 				A.Values[#A.Values+1] = Value
 				A:Update()
+				A.Dirty = true
 				Changed = true
 			end
 		else
 			if Index then
 				table.remove(A.Values, Index)
 				A:Update()
+				A.Dirty = true
 				Changed = true
 			end
 		end
@@ -3706,7 +3732,7 @@ do
 				A.HasValues = true
 				Changed = true
 				if A.CallbackOnce then
-					A:CallbackOnce()
+					A.CallbackOnce(A)
 				end
 			end
 		else
@@ -3714,12 +3740,12 @@ do
 				A.HasValues = false
 				Changed = true
 				if A.CallbackOnce then
-					A:CallbackOnce()
+					A.CallbackOnce(A)
 				end
 			end
 		end
 		if A.CallbackEvery then
-			A:CallbackEvery()
+			A.CallbackEvery(A)
 		end
 		return Changed
 	end
@@ -3728,10 +3754,10 @@ do
 		local Changed = A.HasValues ~= HasValues
 		A.HasValues = HasValues
 		if A.CallbackOnce then
-			A:CallbackOnce()
+			A.CallbackOnce(A)
 		end
 		if A.CallbackEvery then
-			A:CallbackEvery()
+			A.CallbackEvery(A)
 		end
 		return Changed
 	end
@@ -3769,6 +3795,22 @@ export type SurfaceBillboard = {
 	Part: BasePart;
 	Gui: SurfaceGui;
 
+	-- You can set this directly, it is safe. It will be applied later when
+	-- updating.
+	Enabled: boolean;
+
+	-- Optional callback which will be called when using SB:Update() (which will
+	-- be every frame with UpdateMode="auto").
+	OnUpdate: ((
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		 -- Only present if CFrame changed to a new value. (Otherwise use
+		 -- SB.CachedCFrame which may also be nil if billboard has never been
+		 -- visible before.)
+		NewCFrame: CFrame?
+	)->())?;
+
+	-- These props must be set by :Set() or :SetProp().
 	Adornee: Instance;
 	AnchorPoint: Vector2;
 	Size: Vector2;
@@ -3778,33 +3820,62 @@ export type SurfaceBillboard = {
 	ExtentsOffsetWorld: Vector3;
 	ExtentsOffsetCamera: Vector3;
 
+	-- Readonly/internal properties. You can read some of these yourself if you
+	-- want.
+	UpdateMode: "auto" | "manual";
 	CachedPixelsPerStud: number;
 	CachedGuiSize: Vector2;
 	CachedPartSize: Vector3;
-	CachedEnabled: boolean;
 	CachedMaxDistance: number;
-
-	UpdateMode: "auto" | "manual";
+	CachedVisible: boolean;
+	CachedCFrame: CFrame;
 
 	-- Used only with update mode auto. Automatically updated SurfaceBillboards
 	-- are stored in a linked list so that creation & destruction are O(1).
 	Node: DLL_Node<{ SB: SurfaceBillboard; }>?;
 
-	-- This function returns the new part CFrame (that should be applied to
-	-- SurfaceBillboard.Part), if an update is required. It is returned instead
-	-- of being set internally so that you can batch the CFrame set in whichever
-	-- way you prefer.
+	-- Basic methods.
+	Set: (SB: SurfaceBillboard, Props: SurfaceBillboardProps)->SurfaceBillboard;
+	SetProp: (SB: SurfaceBillboard, Name: string, Value: any)->SurfaceBillboard;
+	Destroy: (SB: SurfaceBillboard)->();
+
+	-- This function runs all the other update functions in one go. It returns
+	-- the new part CFrame (that should be applied to SurfaceBillboard.Part), if
+	-- an update is required. It is returned instead of being set internally so
+	-- that you can batch the CFrame property write in whichever way you prefer.
 	Update: (
 		SB: SurfaceBillboard,
 		CameraCFrame: CFrame,
 		Hidden: boolean?, -- If set, the gui will be hidden.
 		BBCFrame: CFrame?, -- Specify both BBCFrame and BBSize to improve perf.
 		BBSize: Vector3?
-	)->(CFrame?); -- Returns the new part CFrame if it needs to be updated.
+	)->(CFrame?); -- Returns the new part CFrame only if an update is required.
 
-	Set: (SB: SurfaceBillboard, Props: SurfaceBillboardProps)->SurfaceBillboard;
-	SetProp: (SB: SurfaceBillboard, Name: string, Value: any)->SurfaceBillboard;
-	Destroy: (SB: SurfaceBillboard)->();
+	-- Step #1: Determine if billboard is visible, and get the point it should be
+	-- rendered at.
+	UpdateEnabled: (
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		Hidden: boolean?, -- If set, the gui will be hidden.
+		BBCFrame: CFrame?, -- Specify both BBCFrame and BBSize to improve perf.
+		BBSize: Vector3?
+	)->(Vector3?); -- Return the position of the billboard if it's enabled.
+	--
+	-- Step #2: If the billboard is visible, call this to update its size.
+	--
+	-- Call this before SB:UpdateCFrame() so that SB.AnchorPoint is applied
+	-- correctly.
+	UpdateSize: (SB: SurfaceBillboard)->();
+	--
+	-- Step #3: If the billboard is visible, and after updating its size, call
+	-- this to compute the new CFrame for SB.Part. (Which the user should then
+	-- apply to the part themselves.) The CFrame is only returned if it changed
+	-- since the last update.
+	UpdateCFrame: (
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		Position: Vector3
+	)->(CFrame?);
 }
 export type SurfaceBillboardProps = {
 	-- custom
@@ -3828,11 +3899,17 @@ export type SurfaceBillboardProps = {
 	Brightness: boolean?;
 }
 do
+	-- SurfaceBillboards will be placed in this folder if they have
+	-- UpdateMode="auto" and a parent is not specified. In all other scenarios,
+	-- the billboard will not be parented to this folder! If you wish to use this
+	-- folder, you can manually pass it in as the Parent when creating the
+	-- SurfaceBillboard (if you do it after creation it will not be parented).
 	local BillboardsFolder
 	if game:GetService("RunService"):IsClient() then
 		BillboardsFolder = Instance.new("Folder")
 		BillboardsFolder.Name = "SurfaceBillboards"
 	end
+	Module.SurfaceBillboardsFolder = BillboardsFolder
 
 	local DefaultProps: SurfaceBillboardProps = table.freeze({
 		Adornee = nil;
@@ -3844,7 +3921,6 @@ do
 		ExtentsOffsetWorld = Vector3.zero;
 		ExtentsOffsetCamera = Vector3.zero;
 
-		Parent = BillboardsFolder;
 		ZOffset = 0;
 		ClipsDescendants = false;
 		LightInfluence = 0;
@@ -3854,31 +3930,31 @@ do
 	local SBMeta: SurfaceBillboard =
 		(function(): any local c = {}; c.__index = c; return c end)()
 
-	function SBMeta.Update(
+	function SBMeta.UpdateSize(
+		SB: SurfaceBillboard
+	)
+		if SB.CachedPixelsPerStud ~= SB.PixelsPerStud or
+			SB.CachedGuiSize ~= SB.Size
+		then
+			SB.CachedPixelsPerStud = SB.PixelsPerStud
+			SB.CachedGuiSize = SB.Size
+			SB.CachedPartSize = Vector3.new(
+				SB.CachedGuiSize.X/SB.PixelsPerStud,
+				SB.CachedGuiSize.Y/SB.PixelsPerStud,
+				0.1)
+			SB.Gui.CanvasSize = SB.CachedGuiSize
+			SB.Part.Size = SB.CachedPartSize
+		end
+	end
+	function SBMeta.UpdateEnabled(
 		SB: SurfaceBillboard,
 		CameraCFrame: CFrame,
 		Hidden: boolean?,
 		BBCFrame: CFrame?,
 		BBSize: Vector3?
-	): CFrame?
-		local NewCFrame
-		local Enabled = false
-		if not Hidden then
-
-			local SIZE_Z = 0.1
-
-			if SB.CachedPixelsPerStud ~= SB.PixelsPerStud or
-				SB.CachedGuiSize ~= SB.Size
-			then
-				SB.CachedPixelsPerStud = SB.PixelsPerStud
-				SB.CachedGuiSize = SB.Size
-				SB.CachedPartSize = Vector3.new(
-					SB.CachedGuiSize.X/SB.PixelsPerStud,
-					SB.CachedGuiSize.Y/SB.PixelsPerStud,
-					SIZE_Z)
-				SB.Gui.CanvasSize = SB.CachedGuiSize
-				SB.Part.Size = SB.CachedPartSize
-			end
+	): Vector3?
+		local Result: Vector3?
+		if SB.Enabled and not Hidden then
 
 			local _BBCFrame: CFrame, _BBSize: Vector3
 			if BBCFrame and BBSize then
@@ -3908,10 +3984,6 @@ do
 			local CamBBSize = CamBBMax - CamBBMin
 
 			local RelativeOffsets =
-				Vector3.new(
-					SB.CachedPartSize.X*(SB.AnchorPoint.X-0.5),
-					SB.CachedPartSize.Y*(SB.AnchorPoint.Y-0.5),
-					SIZE_Z*0.5) +
 				SB.StudsOffsetCamera +
 				SB.ExtentsOffsetCamera*CamBBSize*0.5
 
@@ -3922,23 +3994,69 @@ do
 				CameraCFrame:VectorToWorldSpace(RelativeOffsets)
 
 			if (Position-CameraCFrame.Position).Magnitude <= SB.CachedMaxDistance then
-				Enabled = true
-
-				NewCFrame = CFrame.lookAlong(
-					Position,
-					CameraCFrame.ZVector,
-					CameraCFrame.YVector)
+				Result = Position
 			end
 		end
 
-		if SB.CachedEnabled ~= Enabled then
-			SB.CachedEnabled = Enabled
+		local Enabled = Result ~= nil
+		if SB.CachedVisible ~= Enabled then
+			SB.CachedVisible = Enabled
 			SB.Gui.Enabled = Enabled
 		end
 
+		return Result
+	end
+	function SBMeta.UpdateCFrame(
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		Position: Vector3
+	): CFrame?
+		Position += CameraCFrame:VectorToWorldSpace(Vector3.new(
+			SB.CachedPartSize.X*(SB.AnchorPoint.X-0.5),
+			SB.CachedPartSize.Y*(SB.AnchorPoint.Y-0.5),
+			SB.CachedPartSize.Z*0.5))
+
+		local NewCFrame = CFrame.lookAlong(
+			Position,
+			CameraCFrame.ZVector,
+			CameraCFrame.YVector)
+
+		local Result
+		if SB.CachedCFrame ~= NewCFrame then
+			SB.CachedCFrame = NewCFrame
+			Result = NewCFrame
+		end
+
+		return Result
+	end
+
+	function SBMeta.Update(
+		SB: SurfaceBillboard,
+		CameraCFrame: CFrame,
+		Hidden: boolean?,
+		BBCFrame: CFrame?,
+		BBSize: Vector3?
+	): CFrame?
+
+		local NewCFrame
+		local Position = SB:UpdateEnabled(CameraCFrame, Hidden, BBCFrame, BBSize)
+		if Position then
+			SB:UpdateSize()
+			NewCFrame = SB:UpdateCFrame(CameraCFrame, Position)
+		end
+		if SB.OnUpdate then
+			SB.OnUpdate(SB, CameraCFrame, NewCFrame)
+		end
 		return NewCFrame
 	end
 
+	-- Common typos, so we just rewrite those here!
+	local Rewrite = table.freeze({
+		["ExtentsOffset"] = "ExtentsOffsetCamera";
+		["ExtentsOffsetWorldSpace"] = "ExtentsOffsetWorld";
+		["StudsOffset"] = "StudsOffsetCamera";
+		["StudsOffsetWorldSpace"] = "StudsOffsetWorld";
+	})
 	local SurfaceGuiProps = table.freeze({
 		ZOffset = true;
 		ClipsDescendants = true;
@@ -3946,6 +4064,7 @@ do
 		Brightness = true;
 	} :: {[string]: boolean})
 	function SBMeta.SetProp(SB: SurfaceBillboard, Name: string, Value: any)
+		Name = (Rewrite :: {[string]: string})[Name] or Name
 		if SurfaceGuiProps[Name] then
 			local GuiA = SB.Gui :: any
 			if GuiA[Name] ~= Value then
@@ -4023,6 +4142,7 @@ do
 
 		local SB: SurfaceBillboard =
 			setmetatable({} :: SurfaceBillboard, SBMeta) :: any
+		SB.Enabled = true
 
 		local Part = Instance.new("Part")
 		Part.CastShadow = false
@@ -4034,37 +4154,49 @@ do
 		SB.Part = Part
 
 		local Gui = Instance.new("SurfaceGui")
-		Gui.Parent = SB.Part
 		Gui.Adornee = SB.Part
 		Gui.ResetOnSpawn = false
 		Gui.Active = false
 		Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		Gui.Enabled = false
+		Gui.Parent = SB.Part
 		SB.Gui = Gui
 
+		SB.UpdateMode = if UpdateMode ~= nil then UpdateMode else "auto"
+
+		-- For every default property, set either the provided version or the
+		-- default version. NOTE: Parent should never be part of default props.
 		for Name, Default in DefaultProps :: {[string]: any} do
-			if Name ~= "Parent" then
-				local Value =
-					if Props then (Props :: {[string]: any})[Name] else nil
-				if Value == nil then
-					Value = Default
-				end
-				SB:SetProp(Name, Value)
+			local Value =
+				if Props then (Props :: {[string]: any})[Name] else nil
+			if Value == nil then
+				Value = Default
 			end
+			SB:SetProp(Name, Value)
 		end
-		local Parent = DefaultProps.Parent
+		-- For remaining provided props, set them here as well.
 		if Props then
 			for Name, Value in Props :: {[string]: any} do
-				if (DefaultProps :: {[string]: any})[Name] == nil then
+				if (Name ~= "Parent") and
+					(DefaultProps :: {[string]: any})[Name] == nil
+				then
 					SB:SetProp(Name, Value)
 				end
 			end
-			if Props.Parent ~= nil then
-				Parent = Props.Parent
-			end
+		end
+
+		local Parent =
+			if Props and Props.Parent then Props.Parent
+			elseif SB.UpdateMode == "auto" then assert(BillboardsFolder)
+			else nil
+		if (BillboardsFolder) and
+			(Parent == BillboardsFolder) and
+			(not BillboardsFolder.Parent)
+		then
+			BillboardsFolder.Parent = workspace
 		end
 		SB:SetProp("Parent", Parent)
 
-		SB.UpdateMode = if UpdateMode ~= nil then UpdateMode else "auto"
 		if SB.UpdateMode == "auto" then
 			SB.Node = {SB = SB} :: DLL_Node<{ SB: SurfaceBillboard; }>
 			assert(SB.Node)
@@ -4072,7 +4204,6 @@ do
 			if not UpdateConnection then
 				UpdateConnection = game:GetService("RunService").RenderStepped
 					:Connect(AutoUpdateSurfaceBillboards)
-				assert(BillboardsFolder).Parent = workspace
 			end
 		end
 
