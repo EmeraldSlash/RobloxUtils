@@ -250,8 +250,9 @@
 -- OG:RemoveLeaf()
 -- OG:RemoveRoot()
 -- OG:SetProperty()
--- OG:WriteTransparency()
--- OG:UpdateTransparency()
+-- OG:SetOpacity()
+-- OG:Update()
+-- OG:ApplyProperties()
 -- OG:Push()
 -- OG:SetParent()
 -- OG:Clear()
@@ -4282,10 +4283,11 @@ end
 -- convert between the formats: Opacity = 1 - Transparency.)
 --
 export type OpacityGroup = {
-	ByInstance: {[Instance]: OG_Instance};
-	Opacity: number;
-	Dirty: boolean;
+	Opacity: number; -- Set by the user.
 
+	ByInstance: {[Instance]: OG_Instance};
+	AbsoluteOpacity: number; -- Set internally, takes into account parent opacity.
+	Dirty: boolean;
 	Children: {OpacityGroup}?;
 	Parent: OpacityGroup?;
 
@@ -4348,15 +4350,23 @@ export type OpacityGroup = {
 		MakeDirty: boolean?
 	)->(OpacityGroup);
 
-	-- Call this to write transparency properties. Will only write them if the
-	-- cached value is different, or if ForceWriteAll is true.
+	-- Helper to set OG.Opacity inline.
+	SetOpacity: (OG: OpacityGroup, Opacity: number)->(OpacityGroup);
+
+	-- Call this to check if the current opacity value changed (or one of the
+	-- derived instance's opacities changed), and call ApplyProperties() if so.
+	-- This will also recursively update all children OpacityGroups, and compute
+	-- OG.AbsoluteOpacity by taking into account the parent group's opacity.
+	Update: (OG: OpacityGroup,ForceWriteAll: boolean?)->(OpacityGroup);
+
+	-- Call this to write transparency properties (using OG.AbsoluteOpacity, NOT
+	-- OG.Opacity!). Will only write individual properties if their cached
+	-- opacity is different, or if ForceWriteAll is true.
 	ApplyProperties: (OG: OpacityGroup, ForceWriteAll: boolean?)->(OpacityGroup);
 
-	-- Call this to update current transparency value, and call Write() if
-	-- transparency or something else changed (OG.Dirty was true).
-	UpdateOpacity: (OG: OpacityGroup, Opacity: number, ForceWriteAll: boolean?)->(OpacityGroup);
-
-	-- Push a child transparency group to a parent group.
+	-- Push a child transparency group to a parent group. When a group is a child
+	-- of another group, its own opacity will be multiplied with the parent's
+	-- opacity.
 	Push: (ParentOG: OpacityGroup)->(OpacityGroup);
 
 	-- Change the parent of a transparency group.
@@ -4545,17 +4555,20 @@ do
 		return OG
 	end
 
-	function OGMeta.SetProperty(OG: OpacityGroup, Object: Instance, Name: string, Value: number, MakeDirty: boolean?)
+	function OGMeta.SetProperty(OG: OpacityGroup, Object: Instance, Name: string, Transparency: number, MakeDirty: boolean?)
 		local OGI = OG.ByInstance[Object]
 		if OGI then
 			local Property = OGI.Properties[Name]
 			if Property then
-				local Opacity = math.clamp(1 - Value, 0, 1)
-				if type(Value) == "number" and
-					Property.OriginalOpacity ~= Opacity
-				then
-					Property.OriginalOpacity = Opacity
-					MakeDirty = true
+				-- @RU:TODO Handle non-numeric properties here somehow, like
+				-- NumberRanges or NumberSequences? Do we need a custom function
+				-- for this?
+				if type(Transparency) == "number" then
+					local Opacity = math.clamp(1 - Transparency, 0, 1)
+					if Property.OriginalOpacity ~= Opacity then
+						Property.OriginalOpacity = Opacity
+						MakeDirty = true
+					end
 				end
 				if MakeDirty then
 					OG.Dirty = true
@@ -4566,14 +4579,45 @@ do
 		return OG
 	end
 
+	function OGMeta.SetOpacity(OG: OpacityGroup, Opacity: number): OpacityGroup
+		OG.Opacity = Opacity
+		return OG
+	end
+
+	function OGMeta.Update(OG: OpacityGroup, ForceWriteAll: boolean?): OpacityGroup
+
+		-- Update absolute opacity.
+		local AbsoluteOpacity =
+			if OG.Parent then OG.Parent.AbsoluteOpacity*OG.Opacity else OG.Opacity
+		if OG.AbsoluteOpacity ~= AbsoluteOpacity then
+			OG.AbsoluteOpacity = AbsoluteOpacity
+			OG.Dirty = true
+		end
+
+		-- If something changed, update properties.
+		if ForceWriteAll or OG.Dirty then
+			OG.Dirty = false
+			OG:ApplyProperties(ForceWriteAll)
+		end
+
+		-- Update children recursively.
+		if OG.Children then
+			for _, Child in OG.Children do
+				Child:Update(ForceWriteAll)
+			end
+		end
+
+		return OG
+	end
+
 	function OGMeta.ApplyProperties(OG: OpacityGroup, ForceWriteAll: boolean?)
 		for _, OGI in OG.ByInstance do
 			for _, OGP in OGI.Properties do
 				local NewOpacity
 				if OG.BlendOpacity then
-					NewOpacity = OG.BlendOpacity(OGI.ClassName, OGP.Name, OGP.OriginalOpacity, OG.Opacity)
+					NewOpacity = OG.BlendOpacity(OGI.ClassName, OGP.Name, OGP.OriginalOpacity, OG.AbsoluteOpacity)
 				else
-					NewOpacity = OGP.OriginalOpacity * OG.Opacity
+					NewOpacity = OGP.OriginalOpacity * OG.AbsoluteOpacity
 				end
 				if ForceWriteAll or (OGP.AppliedOpacity ~= NewOpacity) then
 					OGP.AppliedOpacity = NewOpacity
@@ -4581,17 +4625,6 @@ do
 					Object_A[OGP.Name] = math.clamp(1 - NewOpacity, 0, 1)
 				end
 			end
-		end
-		return OG
-	end
-	function OGMeta.UpdateOpacity(OG: OpacityGroup, Opacity: number, ForceWriteAll: boolean?): OpacityGroup
-		if OG.Opacity ~= Opacity then
-			OG.Opacity = Opacity
-			OG.Dirty = true
-		end
-		if ForceWriteAll or OG.Dirty then
-			OG.Dirty = false
-			OG:ApplyProperties(ForceWriteAll)
 		end
 		return OG
 	end
