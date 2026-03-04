@@ -5,20 +5,21 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 28 (2026-02-22)
+-- Version 29 (2026-03-04)
 --
 
 --
 -- API summary:
 --
+-- .USin()
+-- .UCos()
+-- .Rebase()
+-- .IndexFromNumber()
+--
 -- .RNG: Random
 -- .PickRandom()
 -- .PickRandomWeighted()
 -- .RandomSeed()
--- .IndexFromNumber()
--- .USin()
--- .UCos()
--- .Rebase()
 --
 -- .Accumulator()
 -- Accumulator:Next()
@@ -183,11 +184,10 @@
 -- .DLL_Remove()
 --
 -- type ContextActionMulti
--- ContextActionMulti:Destroy()
 -- .CAM_New()
--- ContextActionMulti:SetInputs()
--- .CAM_NewBound()
--- ContextActionMulti:SetBound()
+-- CAM:Destroy()
+-- CAM:Inputs()
+-- CAM:Bound()
 --
 -- type Cache
 -- .CacheNew()
@@ -226,10 +226,6 @@
 -- SAM:BRectInASpace()
 -- SAM:IsTopbarValid()
 --
--- type TouchControlsObserver
--- .TouchControlsObserverNew()
--- TCO:Update()
---
 -- type BulkPositioner
 -- .BP_New()
 -- BP:Add()
@@ -245,10 +241,60 @@
 -- SB:SetProp()
 -- SB:Update()
 -- SB:Destroy()
+--
+-- type OpacityGroup
+-- .OpacityGroupNew()
+-- OG:Configure()
+-- OG:AddLeaf()
+-- OG:AddRoot()
+-- OG:RemoveLeaf()
+-- OG:RemoveRoot()
+-- OG:SetProperty()
+-- OG:WriteTransparency()
+-- OG:UpdateTransparency()
+-- OG:Push()
+-- OG:SetParent()
+-- OG:Clear()
+-- OG:Destroy()
 
 local Module = {}
 
+--
+-- Small Math Helpers
+--
+
+-- Turns sin & cos into values from 0 to 1.
+function Module.USin(Value)
+	return math.clamp((math.sin(Value)+1)/2, 0, 1)
+end
+function Module.UCos(Value)
+	return math.clamp((math.cos(Value)+1)/2, 0, 1)
+end
+
+-- Change the "base" or "origin" of a number from being in space A to being in
+-- space B. (e.g. useful for converting between different time functions like
+-- os.clock(), tick(), and workspace:GetServerTimeNow().)
+function Module.Rebase(AValue: number, ABase: number, BBase: number): number
+	return (AValue - ABase) + BBase
+end
+
+-- This function partitions a number in the range 0-1 inclusive into indices in
+-- range 1-MaxIndex inclusive. Biased towards lower indices, so that values in
+-- the range (inclusive) 0 - 1/MaxIndex (exclusive usually, but inclusive if
+-- float >= 1) will be given index 1.
+function Module.IndexFromNumber(ValueFloat: number, MaxIndex: number)
+	return
+		if ValueFloat < 1 or MaxIndex < 1 then 1
+		else math.clamp(math.ceil(ValueFloat / (1/MaxIndex)), 1, MaxIndex)
+end
+
+---
+-- Random Number Helpers
+--
 Module.RNG = Random.new()
+function Module.RandomSeed()
+	return math.random(2147483647)
+end
 function Module.PickRandom<T>(Array: {T}, RNG: Random?): T
 	local _RNG = RNG or Module.RNG
 	return Array[_RNG:NextInteger(1, #Array)]
@@ -276,23 +322,6 @@ function Module.PickRandomWeighted<T>(Array: {T}, GetWeight, RNG: Random?): T
 		Result = Array[1]
 	end
 	return Result
-end
-function Module.RandomSeed()
-	return math.random(2147483647)
-end
-function Module.IndexFromNumber(ValueFloat: number, MaxIndex: number)
-	return
-		if ValueFloat < 1 or MaxIndex < 1 then 1
-		else math.clamp(math.ceil(ValueFloat / (1/MaxIndex)), 1, MaxIndex)
-end
-function Module.USin(Value)
-	return math.clamp((math.sin(Value)+1)/2, 0, 1)
-end
-function Module.UCos(Value)
-	return math.clamp((math.cos(Value)+1)/2, 0, 1)
-end
-function Module.Rebase(AValue: number, ABase: number, BBase: number): number
-	return (AValue - ABase) + BBase
 end
 
 --
@@ -2123,7 +2152,9 @@ do
 	function BulkMoveToMeta.Apply(BMT: BulkMoveTo): boolean
 		local DidMove = BMT.Index > 0
 		if DidMove then
-			workspace:BulkMoveTo(BMT.Parts :: {Instance}, BMT.CFrames)
+			-- Type checker hates this no matter what we do, so just cast to any
+			-- for now.
+			workspace:BulkMoveTo(BMT.Parts :: any, BMT.CFrames)
 			BMT.Index = 0
 			table.clear(BMT.Parts)
 			table.clear(BMT.CFrames)
@@ -2254,6 +2285,7 @@ do
 	end
 end
 
+--
 -- Signal
 --
 -- Basic signal implementation.
@@ -2480,37 +2512,41 @@ end
 --
 -- ContextActionMulti
 --
--- Registers the same ContextActionService action for many inputs with each
+-- Registers the same ContextActionService action for many inputs, with each
 -- input registered separately so that they can be cancelled individually
--- without overriding the other inputs.
+-- without overriding the other inputs (which is what would happen if using a
+-- single ContextActionService with multiple inputs).
 --
--- Also allows keybindings to be dynamically changed by providing a completely
--- new table of inputs. If using CAM:SetInputs(), this is done just by
--- providing the Inputs argument. If using CAM:SetBound(), this is done by
--- replacing the CAM.InputsToBind field.
---
--- Examples:
+-- Bound inputs can be dynamically changed by providing a new table of inputs,
+-- or they can be set statically in the beginning. Here are two examples of how
+-- the API can be used:
 --[[
 
 local CAM = Module.CAM_New("Name", 1, function() end)
+	:Bound(true)
 while true do
-	CAM:SetInputs({Enum.KeyCode.Left})
+	CAM:Inputs({Enum.KeyCode.Left})
 	task.wait(1)
-	CAM:SetInputs(nil)
+	CAM:Inputs(nil)
 	task.wait(1)
 end
 
-local CAM = Module.CAM_NewBound("Name", 1, {Enum.keyCode.Left}, function() end)
+local CAM = Module.CAM_New("Name", 1, function() end)
+	:Inputs({Enum.KeyCode.Left})
 while true do
-	CAM:SetBound(true)
+	CAM:Bound(true)
 	task.wait(1)
-	CAM:SetBound(false)
+	CAM:Bound(false)
 	task.wait(1)
 end
+
+local CAM = Module.CAM_New("Name", 1, function() end)
+	:Inputs({Enum.KeyCode.Left}):Bound(true)
 
 --]]
 
-export type ContextActionMultiCallback = (
+export type CAM_Input = Enum.KeyCode|Enum.UserInputType
+export type CAM_Callback = (
 
 	-- Values directly passed from the ContextActionService callback.
 	Name: string,
@@ -2518,7 +2554,13 @@ export type ContextActionMultiCallback = (
 	InputObject: InputObject,
 
 	-- Additional values that are useful.
-	Input: Enum.KeyCode|Enum.UserInputType,
+	--
+	-- The InputObject given by ContextActionService doesn't always correspond to
+	-- the input that the action was registered for, so we make up for that by
+	-- providing the registered input here.
+	Input: CAM_Input,
+	--
+	-- Allows you reference the CAM itself for your convenience.
 	CAM: ContextActionMulti
 
 )->(Enum.ContextActionResult?)
@@ -2526,31 +2568,25 @@ export type ContextActionMultiCallback = (
 export type ContextActionMulti = {
 	Name: string;
 	Priority: number;
-	Action: ContextActionMultiCallback;
+	Action: CAM_Callback;
 
-	-- Set internally, these are the inputs which are actually being used by
-	-- ContextActionService.
-	InputsActive: {Enum.KeyCode|Enum.UserInputType}?;
+	-- Internal fields
+	InputsToBind: {CAM_Input}?;
+	IsBound: boolean;
+	IsBound_ByInput: {[CAM_Input]: boolean};
 
-	-- Normal API
-	--
-	-- Set the table of inputs that are currently active.
-	SetInputs: (
+	-- Set inputs or whether the action is bound or not. These are combined with
+	-- logical and, so the actions will only be bound if there is both an input
+	-- and the CAM has been bound.
+	Inputs: (
 		CAM: ContextActionMulti,
-		Inputs: {Enum.KeyCode|Enum.UserInputType}?
+		Inputs: {CAM_Input}?
+	)->(ContextActionMulti);
+	Bound: (
+		CAM: ContextActionMulti,
+		IsBound: boolean
 	)->(ContextActionMulti);
 
-	-- Alternative API
-	--
-	-- Populated by CAM_NewBound(), or your own usage code. Used by
-	-- CAM:SetBound() to set bind/unbind these inputs.
-	InputsToBind: {Enum.KeyCode|Enum.UserInputType}?;
-	--
-	-- Only works with CAMs created via CAMS_NewBound, or which have the
-	-- InputsToBind field set.
-	SetBound: (CAM: ContextActionMulti, Bound: boolean)->(ContextActionMulti);
-
-	-- Clean up.
 	Destroy: (CAM: ContextActionMulti)->(ContextActionMulti);
 }
 do
@@ -2561,7 +2597,7 @@ do
 	function Module.CAM_New(
 		Name: string,
 		Priority: number,
-		Action: ContextActionMultiCallback
+		Action: CAM_Callback
 	): ContextActionMulti
 
 		assert(type(Name) == "string", "CAM_New(): Name must be a string")
@@ -2569,68 +2605,69 @@ do
 		assert(type(Action) == "function", "CAM_New(): Action must be a function")
 
 		return setmetatable({
+
 			Name = Name;
 			Priority = Priority;
 			Action = Action;
+
+			IsBound = false;
+			IsBound_ByInput = {};
+
 		}, CAMMeta) :: any
 	end
-	function CAMMeta.SetInputs(
-		CAM: ContextActionMulti,
-		Inputs: {Enum.KeyCode|Enum.UserInputType}?
-	)
-		while true do
-			if not CAM.InputsActive then
-				if not Inputs then
-					break
-				else
-					CAM.InputsActive = Inputs
-					for _, Input in Inputs do
-						ContextActionService:BindActionAtPriority(
-							CAM.Name.."_"..tostring(Input),
-							function(Name, InputState, InputObject)
-								return CAM.Action(Name, InputState, InputObject, Input, CAM)
-							end, false, CAM.Priority, Input)
-					end
-				end
-			elseif CAM.InputsActive ~= Inputs then
-				for _, Input in CAM.InputsActive do
-					ContextActionService:UnbindAction(CAM.Name.."_"..tostring(Input))
-				end
-				CAM.InputsActive = nil
-			else
-				break
+
+	local function UpdateBindings(CAM: ContextActionMulti)
+		if (not CAM.IsBound) or
+			(not CAM.InputsToBind) or
+			(not CAM.InputsToBind[1])
+		then
+			for Input in CAM.IsBound_ByInput do
+				ContextActionService:UnbindAction(CAM.Name.."_"..tostring(Input))
 			end
+			table.clear(CAM.IsBound_ByInput)
+		else
+			local Visited = {}
+			for _, Input in CAM.InputsToBind do
+				Visited[Input] = true
+				if not CAM.IsBound_ByInput[Input] then
+					CAM.IsBound_ByInput[Input] = true
+					ContextActionService:BindActionAtPriority(
+						CAM.Name.."_"..tostring(Input),
+						function(Name, InputState, InputObject)
+							return CAM.Action(Name, InputState, InputObject, Input, CAM)
+						end, false, CAM.Priority, Input)
+				end
+			end
+			for Input in CAM.IsBound_ByInput do
+				if not Visited[Input] then
+					CAM.IsBound_ByInput[Input] = nil
+				end
+			end
+		end
+	end
+	function CAMMeta.Inputs(CAM: ContextActionMulti, Inputs: {CAM_Input}?, IsDirty: boolean?): ContextActionMulti
+		if IsDirty or
+			CAM.InputsToBind ~= Inputs
+		then
+			CAM.InputsToBind = Inputs
+			UpdateBindings(CAM)
 		end
 		return CAM
 	end
-	function CAMMeta.Destroy(CAM: ContextActionMulti)
-		return CAM:SetInputs(nil)
-	end
-
-	function Module.CAM_NewBound(
-		Name: string,
-		Priority: number,
-		InputsToBind: {Enum.KeyCode|Enum.UserInputType},
-		Action: ContextActionMultiCallback
-	): ContextActionMulti
-
-		assert(type(Name) == "string", "CAM_NewBound(): Name must be a string")
-		assert(type(Priority) == "number", "CAM_NewBound(): Priority must be a number")
-		assert(type(InputsToBind) == "table", "CAM_NewBound(): InputsToBind must be a table")
-		assert(type(Action) == "function", "CAM_NewBound(): Action must be a function")
-
-		return setmetatable({
-			Name = Name;
-			Priority = Priority;
-			InputsToBind = InputsToBind;
-			Action = Action;
-		}, CAMMeta) :: any
-	end
-	function CAMMeta.SetBound(CAM: ContextActionMulti, Bound: boolean)
-		if not CAM.InputsToBind then
-			warn(debug.traceback("CAM:SetBound(): CAM is missing InputsToBind field. Did you forget to call CAM_NewBound()?"))
+	function CAMMeta.Bound(CAM: ContextActionMulti, IsBound: boolean): ContextActionMulti
+		IsBound = if IsBound then true else false
+		if CAM.IsBound ~= IsBound then
+			CAM.IsBound = IsBound
+			UpdateBindings(CAM)
 		end
-		return CAM:SetInputs(if Bound then CAM.InputsToBind else nil)
+		return CAM
+	end
+
+	function CAMMeta.Destroy(CAM: ContextActionMulti): ContextActionMulti
+		CAM.InputsToBind = nil
+		CAM.IsBound = false
+		UpdateBindings(CAM)
+		return CAM
 	end
 end
 
@@ -2850,6 +2887,7 @@ do
 	end
 end
 
+--
 -- Anim
 --
 -- Helper for immediate-mode evaluated animations. Designed for chained usage.
@@ -2902,6 +2940,7 @@ export type Anim = {
 
 	-- internal state
 	Duration: number;
+	Progress: number;
 	Start: number;
 	Target: number;
 	Elapsed: number?; -- only set when an animation is active
@@ -2958,6 +2997,7 @@ do
 		local EaseType = typeof(EaseStyle)
 		return setmetatable({
 			Duration = Duration;
+			Progress = 0;
 			Value = Value;
 			Start = Value;
 			Target = Value;
@@ -2986,6 +3026,7 @@ do
 			local EaseType = typeof(EaseStyle)
 			Anim = setmetatable({
 				Duration = Duration;
+				Progress = 0;
 				Value = Value;
 				Start = Value;
 				Target = Value;
@@ -3003,6 +3044,7 @@ do
 			Anim.Start = Anim.Value or Target
 			Anim.Value = Anim.Value or Target
 			Anim.Elapsed = if Anim.Target ~= Anim.Start then 0 else nil
+			Anim.Progress = 0
 		end
 		return Anim
 	end
@@ -3011,31 +3053,49 @@ do
 		Anim.Start = Start
 		Anim.Value = Start
 		Anim.Elapsed = if Anim.Target ~= Anim.Start then 0 else nil
+		Anim.Progress = 0
 		return Anim
 	end
-	function AnimMeta.Compute(Anim: Anim, Delta: number, ConstantSpeed: boolean?): Anim
+	function AnimMeta.Compute(
+		Anim: Anim,
+		Delta: number,
+		ConstantSpeed: boolean?,
+		GracefulSpeedChanges: boolean?
+	): Anim
 		if Anim.Elapsed then
 			Anim.Elapsed += Delta
 			if not Anim.Duration then
 				warn(debug.traceback("Anim is missing a duration!"))
 				Anim.Duration = 0
 			end
-			local Duration =
-				if ConstantSpeed then math.abs(Anim.Target - Anim.Start) / Anim.Duration
-				else Anim.Duration
-			local Progress = Anim.Elapsed / Duration
 			-- The animation will bias towards being complete if duration is 0.
-			if Progress ~= Progress then Progress = 1 end
-			Progress = math.clamp(Progress, 0, 1)
-			if Progress > 0 and Progress < 1 then
+			local Progress: number
+			if not GracefulSpeedChanges then
+				local Duration =
+					if ConstantSpeed then (math.abs(Anim.Target - Anim.Start) / Anim.Duration)
+					else Anim.Duration
+				Progress = Anim.Elapsed / Duration
+				if math.isnan(Progress) then Progress = 1 end
+				Progress = math.clamp(Progress, 0, 1)
+				Anim.Progress = Progress
+			else
+				local Speed =
+					if ConstantSpeed then (Anim.Duration / math.abs(Anim.Target - Anim.Start))
+					else (1 / Anim.Duration)
+				if math.isnan(Speed) then Speed = math.huge end
+				Progress = math.clamp(Anim.Progress + Speed*Delta, 0, 1)
+				Anim.Progress = Progress
+			end
+			local Eased = Progress
+			if Eased > 0 and Eased < 1 then
 				if Anim.Easer then
-					Progress = Anim.Easer(Progress, Anim, Delta, ConstantSpeed)
+					Eased = Anim.Easer(Eased, Anim, Delta, ConstantSpeed)
 				elseif Anim.EaseStyle then
-					Progress = TweenService_GetValue(TweenService,
-						Progress, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
+					Eased = TweenService_GetValue(TweenService,
+						Eased, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
 				end
 			end
-			Anim.Value = math.lerp(Anim.Start, Anim.Target, Progress)
+			Anim.Value = math.lerp(Anim.Start, Anim.Target, Eased)
 			if Anim.Value == Anim.Target then
 				Anim.Elapsed = nil
 			end
@@ -3804,9 +3864,9 @@ export type SurfaceBillboard = {
 	OnUpdate: ((
 		SB: SurfaceBillboard,
 		CameraCFrame: CFrame,
-		 -- Only present if CFrame changed to a new value. (Otherwise use
-		 -- SB.CachedCFrame which may also be nil if billboard has never been
-		 -- visible before.)
+		-- Only present if CFrame changed to a new value. (Otherwise use
+		-- SB.CachedCFrame which may also be nil if billboard has never been
+		-- visible before.)
 		NewCFrame: CFrame?
 	)->())?;
 
@@ -4208,6 +4268,387 @@ do
 		end
 
 		return SB
+	end
+end
+
+--
+-- OpacityGroup
+--
+-- This is an API for applying transparency effects in bulk to many different
+-- instances (for example, GuiObjects or Parts).
+--
+-- It works with transparencies in Opacity format instead of Transparency
+-- format, as the Opacity format is more convenient for blending. (It is easy to
+-- convert between the formats: Opacity = 1 - Transparency.)
+--
+export type OpacityGroup = {
+	ByInstance: {[Instance]: OG_Instance};
+	Opacity: number;
+	Dirty: boolean;
+
+	Children: {OpacityGroup}?;
+	Parent: OpacityGroup?;
+
+	-- CONFIGURABLE FUNCTIONS
+
+	-- These functions control the behavior of the opacity group. By default,
+	-- these are set to the functions defined as Module.OG_*_Default. If you wish
+	-- to disable the default behavior, you should set them to nil, either
+	-- manually, or by calling OG:Configure() with no arguments.
+
+	-- Returns an array of transparency properties for a given class. If it
+	-- returns nil, or an empty array, the instance will not be tracked. If this
+	-- is nil, no instances will ever be added to the group.
+	GetClassProperties: OG_GetClassProperties?;
+
+	-- Returns true if a particular instance should have its descendants be
+	-- tracked or not. This is useful if you have instances with their own
+	-- transparency grouping behavior, such as CanvasGroups. If this is nil, no
+	-- descendants will ever be added to the group, and only the root instances
+	-- will be added.
+	CanAddChildren: OG_CanAddChildren?;
+
+	-- This function controls how transparency is blended between a property's
+	-- original transparency and the group's transparency. Can be used to apply
+	-- special easing styles as well, which is useful especially for secondary
+	-- effects such as strokes where you want them to be de-emphasized (i.e. more
+	-- transparent) in comparison to the main content. If not specified,
+	-- transparency will be blended linearly. This function is given
+	-- transparencies in opacity form (opacity = 1 - transparency) as this
+	-- is more convenient for blending.
+	BlendOpacity: OG_BlendOpacity?;
+
+	-- METHODS
+
+	-- Helper for applying the different behavior modifications inline.
+	Configure: (
+		OG: OpacityGroup,
+		GetClassProperties: OG_GetClassProperties?,
+		CanAddChildren: OG_CanAddChildren?,
+		BlendOpacity: OG_BlendOpacity?
+	)->(OpacityGroup);
+
+	-- Add and remove objects from the opacity group. Leaf functions will only
+	-- operate on the given instances, root functions will operate on the objects
+	-- plus their descendants.
+	AddLeaf: (OG: OpacityGroup, ...Instance)->(OpacityGroup);
+	AddRoot: (OG: OpacityGroup, ...Instance)->(OpacityGroup);
+	RemoveLeaf: (OG: OpacityGroup, ...Instance)->(OpacityGroup);
+	RemoveRoot: (OG: OpacityGroup, ...Instance)->(OpacityGroup);
+
+	-- Update the transparency of a property on an existing object. (Use this if
+	-- you want to change its transparency manually. Changes will be applied on
+	-- the next write.) NOTE: This API takes values in Transparency format instead
+	-- of Opacity format, as that makes the most sense from the usage code's perspective.
+	SetProperty: (
+		OG: OpacityGroup,
+		Object: Instance,
+		Name: string,
+		Transparency: number,
+		MakeDirty: boolean?
+	)->(OpacityGroup);
+
+	-- Call this to write transparency properties. Will only write them if the
+	-- cached value is different, or if ForceWriteAll is true.
+	ApplyProperties: (OG: OpacityGroup, ForceWriteAll: boolean?)->(OpacityGroup);
+
+	-- Call this to update current transparency value, and call Write() if
+	-- transparency or something else changed (OG.Dirty was true).
+	UpdateOpacity: (OG: OpacityGroup, Opacity: number, ForceWriteAll: boolean?)->(OpacityGroup);
+
+	-- Push a child transparency group to a parent group.
+	Push: (ParentOG: OpacityGroup)->(OpacityGroup);
+
+	-- Change the parent of a transparency group.
+	SetParent: (ChildOG: OpacityGroup, ParentOG: OpacityGroup?)->(OpacityGroup);
+
+	-- Clear all instances from the group (does not clear children, which is an
+	-- unsupported use case right now.
+	Clear: (OG: OpacityGroup)->(OpacityGroup);
+
+	-- Destroy the transparency group, removing it from its own parent group, and
+	-- unparenting all children groups.
+	Destroy: (OG: OpacityGroup)->(OpacityGroup);
+}
+export type OG_Instance = {
+	Instance: Instance;
+	ClassName: string;
+	Properties: {[string]: OG_Property};
+}
+export type OG_Property = {
+	Name: string;
+	OriginalOpacity: number;
+	AppliedOpacity: number;
+}
+
+export type OG_GetClassProperties = (ClassName: string, Object: Instance)->({string})?;
+Module.OG_GetClassProperties_Default = (function(): OG_GetClassProperties
+	local CachedProperties_ByClassName = {}
+
+	return function(ClassName: string, Object: Instance): {string}
+		if not CachedProperties_ByClassName[ClassName] then
+			local CachedProperties = {}
+			CachedProperties_ByClassName[ClassName] = CachedProperties
+			local Properties = game:GetService("ReflectionService"):GetPropertiesOfClass(ClassName, {
+				Security = SecurityCapabilities.fromCurrent();
+				ExcludeInherited = false;
+				ExcludeDisplay = true;
+			})
+			for _, ReflectedProperty in Properties do
+				if string.match(ReflectedProperty.Name, "Transparency") then
+					if ReflectedProperty.Type.ScriptType == "number" then
+						CachedProperties[#CachedProperties+1] = ReflectedProperty.Name
+					end
+				end
+			end
+		end
+		return CachedProperties_ByClassName[ClassName]
+	end
+end)()
+
+export type OG_CanAddChildren = (ClassName: string, Object: Instance)->(boolean)
+Module.OG_CanAddChildren_Default = (function(): OG_CanAddChildren
+	return function(ClassName: string, Object: Instance): boolean
+		return ClassName ~= "CanvasGroup"
+	end
+end)()
+
+export type OG_BlendOpacity = (ClassName: string, PropertyName: string, PropertyOpacity: number, GroupOpacity: number)->(number)
+Module.OG_BlendOpacity_Default = (function(): OG_BlendOpacity
+	return function(ClassName: string, PropertyName: string, PropertyOpacity: number, GroupOpacity: number): number
+		local FinalOpacity
+		if ClassName == "UIStroke" then
+			-- Quadratic easing.
+			FinalOpacity = PropertyOpacity*GroupOpacity*GroupOpacity
+		elseif
+			ClassName == "TextLabel" or
+			ClassName == "TextBox" or
+			ClassName == "TextButton"
+		then
+			-- Quadratic easing.
+			FinalOpacity = PropertyOpacity * (
+				if PropertyName == "TextStrokeTransparency" then GroupOpacity*GroupOpacity
+					else GroupOpacity
+			)
+		else
+			FinalOpacity = PropertyOpacity*GroupOpacity
+		end
+		return FinalOpacity
+	end
+end)()
+
+do
+	local OGMeta: OpacityGroup =
+		(function(): any local c = {}; c.__index = c; return c; end)()
+
+	function Module.OpacityGroupNew(): OpacityGroup
+		local OG: OpacityGroup = setmetatable({
+
+			ByInstance = {};
+			Opacity = 1;
+			Dirty = false;
+
+			BlendOpacity = Module.OG_BlendOpacity_Default;
+			GetClassProperties = Module.OG_GetClassProperties_Default;
+			CanAddChildren = Module.OG_CanAddChildren_Default;
+
+		} :: OpacityGroup, OGMeta) :: any
+		return OG
+	end
+
+	function OGMeta.Configure(
+		OG: OpacityGroup,
+		GetClassProperties: OG_GetClassProperties?,
+		CanAddChildren: OG_CanAddChildren?,
+		BlendOpacity: OG_BlendOpacity?,
+		NoWarn: boolean?
+	): OpacityGroup
+		if not GetClassProperties and not NoWarn then
+			warn(debug.traceback("OpacityGroup requires a GetClassProperties function otherwise no instances will ever be affected by it! You can set the NoWarn argument to disable this warning."))
+		end
+		OG.GetClassProperties = GetClassProperties
+		OG.CanAddChildren = CanAddChildren
+		OG.BlendOpacity = BlendOpacity
+		return OG
+	end
+
+	local function RawAdd(OG: OpacityGroup, Object: Instance): boolean
+		local ClassName = Object.ClassName
+		if not OG.ByInstance[Object] then
+
+			local PropertiesArray
+			if OG.GetClassProperties then
+				PropertiesArray = OG.GetClassProperties(ClassName, Object)
+			end
+			if PropertiesArray and PropertiesArray[1] then
+
+				local OGI = {} :: OG_Instance
+				OG.ByInstance[Object] = OGI
+				OGI.Instance = Object
+				OGI.ClassName = ClassName
+				OGI.Properties = {}
+				for _, Name in PropertiesArray do
+					local OGP = {} :: OG_Property
+					OGI.Properties[Name] = OGP
+					OGP.Name = Name
+					OGP.OriginalOpacity = math.clamp(1 - (Object :: any)[Name], 0, 1)
+					OGP.AppliedOpacity = OGP.OriginalOpacity
+					OG.Dirty = true
+				end
+			end
+		end
+		local CanAddChildren =
+			if OG.CanAddChildren then OG.CanAddChildren(ClassName, Object)
+			else false
+		return CanAddChildren
+	end
+
+	function OGMeta.AddLeaf(OG: OpacityGroup, ...): OpacityGroup
+		for Index = 1, select("#", ...) do
+			local Root = select(Index, ...)
+			RawAdd(OG, Root)
+		end
+		return OG
+	end
+	function OGMeta.AddRoot(OG: OpacityGroup, ...): OpacityGroup
+		for Index = 1, select("#", ...) do
+			local Root = select(Index, ...)
+			local Pending = {Root}
+			while true do
+				local Current = table.remove(Pending)
+				if not Current then
+					break
+				elseif RawAdd(OG, Current) then
+					local Children = Current:GetChildren()
+					table.move(Children, 1, #Children, #Pending+1, Pending)
+				end
+			end
+		end
+		return OG
+	end
+
+	function OGMeta.RemoveLeaf(OG: OpacityGroup, ...): OpacityGroup
+		for Index = 1, select("#", ...) do
+			local Root = select(Index, ...)
+			OG.ByInstance[Root] = nil
+		end
+		return OG
+	end
+	function OGMeta.RemoveRoot(OG: OpacityGroup, ...): OpacityGroup
+		for Index = 1, select("#", ...) do
+			local Root = select(Index, ...)
+			OG.ByInstance[Root] = nil
+			for _, Desc in Root:GetDescendants() do
+				OG.ByInstance[Desc] = nil
+			end
+		end
+		return OG
+	end
+
+	function OGMeta.SetProperty(OG: OpacityGroup, Object: Instance, Name: string, Value: number, MakeDirty: boolean?)
+		local OGI = OG.ByInstance[Object]
+		if OGI then
+			local Property = OGI.Properties[Name]
+			if Property then
+				local Opacity = math.clamp(1 - Value, 0, 1)
+				if type(Value) == "number" and
+					Property.OriginalOpacity ~= Opacity
+				then
+					Property.OriginalOpacity = Opacity
+					MakeDirty = true
+				end
+				if MakeDirty then
+					OG.Dirty = true
+					Property.AppliedOpacity = math.huge
+				end
+			end
+		end
+		return OG
+	end
+
+	function OGMeta.ApplyProperties(OG: OpacityGroup, ForceWriteAll: boolean?)
+		for _, OGI in OG.ByInstance do
+			for _, OGP in OGI.Properties do
+				local NewOpacity
+				if OG.BlendOpacity then
+					NewOpacity = OG.BlendOpacity(OGI.ClassName, OGP.Name, OGP.OriginalOpacity, OG.Opacity)
+				else
+					NewOpacity = OGP.OriginalOpacity * OG.Opacity
+				end
+				if ForceWriteAll or (OGP.AppliedOpacity ~= NewOpacity) then
+					OGP.AppliedOpacity = NewOpacity
+					local Object_A = OGI.Instance :: any
+					Object_A[OGP.Name] = math.clamp(1 - NewOpacity, 0, 1)
+				end
+			end
+		end
+		return OG
+	end
+	function OGMeta.UpdateOpacity(OG: OpacityGroup, Opacity: number, ForceWriteAll: boolean?): OpacityGroup
+		if OG.Opacity ~= Opacity then
+			OG.Opacity = Opacity
+			OG.Dirty = true
+		end
+		if ForceWriteAll or OG.Dirty then
+			OG.Dirty = false
+			OG:ApplyProperties(ForceWriteAll)
+		end
+		return OG
+	end
+
+	function OGMeta.Push(ParentOG: OpacityGroup): OpacityGroup
+		local ChildOG = Module.OpacityGroupNew()
+		ChildOG.Parent = ParentOG
+
+		local Array = ParentOG.Children or {}
+		Array[#Array+1] = ChildOG
+		ParentOG.Children = Array
+
+		return ChildOG
+	end
+	function OGMeta.SetParent(ChildOG: OpacityGroup, ParentOG: OpacityGroup?): OpacityGroup
+		local PrevParent = ChildOG.Parent
+		if PrevParent ~= ParentOG then
+
+			if PrevParent then
+				local Array = PrevParent.Children
+				if Array then
+					local Index = table.find(Array, ChildOG)
+					if Index then
+						table.remove(Array, Index)
+						if not Array[1] then
+							PrevParent.Children = nil
+						end
+					end
+				end
+			end
+
+			ChildOG.Parent = ParentOG
+
+			if ParentOG then
+				local Array = ParentOG.Children or {}
+				Array[#Array+1] = ChildOG
+				ParentOG.Children = Array
+			end
+		end
+		return ChildOG
+	end
+
+	function OGMeta.Clear(OG: OpacityGroup): OpacityGroup
+		table.clear(OG.ByInstance)
+		OG.Opacity = 0
+		OG.Dirty = false
+		return OG
+	end
+	function OGMeta.Destroy(OG: OpacityGroup): OpacityGroup
+		local Array = OG.Children
+		if Array then
+			for _, Child in Array do
+				Child.Parent = nil
+			end
+			OG.Children = nil
+		end
+		return OG:Clear()
 	end
 end
 
