@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 29 (2026-03-04)
+-- Version 32 (2026-04-02)
 --
 
 --
@@ -147,6 +147,10 @@
 -- AsyncTask:Close()
 -- AsyncTask:Destroy()
 --
+-- type AsyncPcall
+-- type AsyncPcallResult
+-- .AsyncPcall()
+--
 -- type Signal
 -- .SignalNew()
 -- Signal:Fire()
@@ -260,6 +264,20 @@
 
 local Module = {}
 
+function Module.DefineClass(): any
+	local Class = {}
+	Class.__index = Class
+	return Class
+end
+function Module.DefineClassT<T>(Table: T): T
+	local Class = Table :: any
+	Class._index = Class
+	return Class
+end
+function Module.InitClass<T>(Table: T, Meta: T): T
+	return setmetatable(Table :: any, Meta :: any) :: any
+end
+
 --
 -- Small Math Helpers
 --
@@ -296,11 +314,12 @@ Module.RNG = Random.new()
 function Module.RandomSeed()
 	return math.random(2147483647)
 end
-function Module.PickRandom<T>(Array: {T}, RNG: Random?): T
+function Module.PickRandom<T>(Array: {T}, RNG: Random?): (T, number)
 	local _RNG = RNG or Module.RNG
-	return Array[_RNG:NextInteger(1, #Array)]
+	local Index = _RNG:NextInteger(1, #Array)
+	return Array[Index], Index
 end
-function Module.PickRandomWeighted<T>(Array: {T}, GetWeight, RNG: Random?): T
+function Module.PickRandomWeighted<T>(Array: {T}, GetWeight, RNG: Random?): (T, number)
 	local _RNG = RNG or Module.RNG
 	local TotalWeight = 0
 	for _, Item in Array do
@@ -309,20 +328,25 @@ function Module.PickRandomWeighted<T>(Array: {T}, GetWeight, RNG: Random?): T
 	local Value = _RNG:NextNumber(0, TotalWeight)
 	local Sum = 0
 	local Result
-	for _, Item in Array do
+	local ResultIndex = 0
+	for Index, Item in Array do
 		local Weight = GetWeight(Item)
 		if Weight > 0 then
 			Sum += Weight
 			if Value <= Sum then
 				Result = Item
+				ResultIndex = Index
 				break
 			end
 		end
 	end
 	if not Result then
-		Result = Array[1]
+		if Array[1] then
+			Result = Array[1]
+			ResultIndex = 1
+		end
 	end
-	return Result
+	return Result, ResultIndex
 end
 
 --
@@ -1970,8 +1994,16 @@ do
 			elseif typeof(Value) == "Instance" then
 				Value:Destroy()
 			elseif type(Value) == "thread" then
-				if Value ~= coroutine.running() then
+				local Status = coroutine.status(Value)
+				if Status ~= "running" and
+					Status ~= "normal"
+				then
 					coroutine.close(Value)
+				else
+					if MAID_DEBUG_ENABLED then
+						print(("maid attempted to close coroutine with status \"%s\" ")
+							:format(tostring(Status))..Maid.DebugName)
+					end
 				end
 			elseif type(Value) == "function" then
 				Value()
@@ -2284,6 +2316,35 @@ do
 	function Module.AsyncTaskNew(): AsyncTask
 		return setmetatable({}, AsyncTaskMeta) :: any
 	end
+end
+
+--
+-- AsyncPcall
+--
+export type AsyncPcall = {
+	Thread: thread?,
+	Result: AsyncPcallResult?
+}
+export type AsyncPcallResult = {
+	Success: boolean;
+	Message: string; -- Only set if Success == false, otherwise will be nil.
+	Values: {any};
+}
+function Module.AsyncPcallThread<T...>(
+	AP: AsyncPcall,
+	Function: <T>(T...)->(),
+	...: T...
+)
+	local Values = {}
+	local Success, Message = pcall(function(...)
+		Values = {Function(...)}
+	end, ...)
+	AP.Thread = nil
+	AP.Result = {
+		Success = Success;
+		Message = Message;
+		Values = Values;
+	}
 end
 
 --
@@ -3887,6 +3948,7 @@ export type SurfaceBillboard = {
 	CachedPixelsPerStud: number;
 	CachedGuiSize: Vector2;
 	CachedPartSize: Vector3;
+	CachedDistance: number;
 	CachedMaxDistance: number;
 	CachedVisible: boolean;
 	CachedCFrame: CFrame;
@@ -3958,6 +4020,8 @@ export type SurfaceBillboardProps = {
 	LightInfluence: number?;
 	MaxDistance: number?;
 	Brightness: boolean?;
+	AlwaysOnTop: boolean?;
+	ToolPunchThroughDistance: boolean?;
 }
 do
 	-- SurfaceBillboards will be placed in this folder if they have
@@ -4054,7 +4118,8 @@ do
 				SB.ExtentsOffsetWorld*_BBSize*0.5 +
 				CameraCFrame:VectorToWorldSpace(RelativeOffsets)
 
-			if (Position-CameraCFrame.Position).Magnitude <= SB.CachedMaxDistance then
+			SB.CachedDistance = (Position-CameraCFrame.Position).Magnitude
+			if SB.CachedDistance <= SB.CachedMaxDistance then
 				Result = Position
 			end
 		end
@@ -4123,6 +4188,8 @@ do
 		ClipsDescendants = true;
 		LightInfluence = true;
 		Brightness = true;
+		AlwaysOnTop = true;
+		ToolPunchThroughDistance = true;
 	} :: {[string]: boolean})
 	function SBMeta.SetProp(SB: SurfaceBillboard, Name: string, Value: any)
 		Name = (Rewrite :: {[string]: string})[Name] or Name
@@ -4224,6 +4291,7 @@ do
 		SB.Gui = Gui
 
 		SB.UpdateMode = if UpdateMode ~= nil then UpdateMode else "auto"
+		SB.CachedDistance = math.huge
 
 		-- For every default property, set either the provided version or the
 		-- default version. NOTE: Parent should never be part of default props.
