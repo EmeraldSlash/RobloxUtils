@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 32 (2026-04-02)
+-- Version 33 (2026-04-10)
 --
 
 --
@@ -214,6 +214,8 @@
 -- Anim:SetEasing()
 -- Anim:SetEaseDir()
 -- Anim:SetEaseStyle()
+-- Anim:SetRespectReducedMotion()
+-- .AnimsRespectReducedMotion
 --
 -- type GuiStateEye
 -- .GSE_New()
@@ -3009,6 +3011,9 @@ export type Anim = {
 	Easer: AnimEaser?; -- custom easing function, takes precedence over EaseStyle
 	EaseStyle: Enum.EasingStyle?; -- builtin easing function using TweenService
 	EaseDir: Enum.EasingDirection?; -- easing direction used only with EaseStyle
+	-- if set, GuiService.ReducedMotionEnabled will cause all DeltaTimes to
+	-- be overridden with infinity to make the animation complete instantly.
+	RespectReducedMotion: boolean?;
 	Cached_Value: number?;
 
 	-- general methods
@@ -3029,6 +3034,7 @@ export type Anim = {
 	SetEaser: (Anim: Anim, Easer: AnimEaser)->(Anim);
 	SetEaseStyle: (Anim: Anim, EaseStyle: Enum.EasingStyle?)->(Anim);
 	SetEaseDir: (Anim: Anim, EaseDir: Enum.EasingDirection?)->(Anim);
+	SetRespectReducedMotion: (Anim: Anim, RespectReducedMotion: boolean?)->(Anim);
 }
 -- The Easer function is allowed to read the following fields from Anim:
 --
@@ -3043,6 +3049,11 @@ export type Anim = {
 -- which will be used to lerp .Start to .Target.
 export type AnimEaser =
 	(Progress: number, Anim: Anim, Delta: number, ConstantSpeed: boolean?)->(number)
+-- If set to true, animations will respect reduced motion by default, and will
+-- only ignore it if their RespectReducedMotion field == false. If set to false,
+-- animations will ignore it by default, and will only respect if if their
+-- RespectReducedMotion field == true.
+Module.AnimsRespectReducedMotion = false
 do
 	local TweenService = game:GetService("TweenService")
 	local TweenService_GetValue = TweenService.GetValue
@@ -3050,11 +3061,22 @@ do
 	local AnimMeta: Anim =
 		(function(): any local c = {}; c.__index = c; return c; end)()
 
+	local ReducedMotionEnabled = false
+	if game:GetService("RunService"):IsClient() then
+		local GuiService = game:GetService("GuiService")
+		local function Update()
+			ReducedMotionEnabled = GuiService.ReducedMotionEnabled
+		end
+		Update()
+		GuiService:GetPropertyChangedSignal("ReducedMotionEnabled"):Connect(Update)
+	end
+
 	function Module.AnimNew(
 		Value: number?,
 		Duration: number,
 		EaseStyle: Enum.EasingStyle? | AnimEaser?,
-		EaseDir: Enum.EasingDirection?
+		EaseDir: Enum.EasingDirection?,
+		RespectReducedMotion: boolean?
 	): Anim
 		local EaseType = typeof(EaseStyle)
 		return setmetatable({
@@ -3066,6 +3088,7 @@ do
 			Easer = if EaseType == "function" then EaseStyle else nil;
 			EaseStyle = if EaseType == "EnumItem" then EaseStyle else nil;
 			EaseDir = EaseDir;
+			RespectReducedMotion = RespectReducedMotion;
 		} :: Anim, AnimMeta) :: any
 	end
 
@@ -3082,7 +3105,8 @@ do
 		Value: number?,
 		Duration: number?,
 		EaseStyle: Enum.EasingStyle? | AnimEaser?,
-		EaseDir: Enum.EasingDirection?
+		EaseDir: Enum.EasingDirection?,
+		RespectReducedMotion: boolean?
 	): Anim
 		if not Anim then
 			local EaseType = typeof(EaseStyle)
@@ -3095,6 +3119,7 @@ do
 				Easer = if EaseType == "function" then EaseStyle else nil;
 				EaseStyle = if EaseType == "EnumItem" then EaseStyle else nil;
 				EaseDir = EaseDir;
+				RespectReducedMotion = RespectReducedMotion;
 			} :: Anim, AnimMeta) :: any
 		end
 		return Anim :: Anim
@@ -3120,12 +3145,20 @@ do
 	end
 	function AnimMeta.Compute(
 		Anim: Anim,
-		Delta: number,
+		DeltaTime: number,
 		ConstantSpeed: boolean?,
 		GracefulSpeedChanges: boolean?
 	): Anim
 		if Anim.Elapsed then
-			Anim.Elapsed += Delta
+			if ReducedMotionEnabled then
+				local Respect =
+					if Module.AnimsRespectReducedMotion then (Anim.RespectReducedMotion ~= false)
+					else (Anim.RespectReducedMotion == true)
+				if Respect then
+					DeltaTime = math.huge
+				end
+			end
+			Anim.Elapsed += DeltaTime
 			if not Anim.Duration then
 				warn(debug.traceback("Anim is missing a duration!"))
 				Anim.Duration = 0
@@ -3145,13 +3178,13 @@ do
 					if ConstantSpeed then (Anim.Duration / math.abs(Anim.Target - Anim.Start))
 					else (1 / Anim.Duration)
 				if math.isnan(Speed) then Speed = math.huge end
-				Progress = math.clamp(Anim.Progress + Speed*Delta, 0, 1)
+				Progress = math.clamp(Anim.Progress + Speed*DeltaTime, 0, 1)
 				Anim.Progress = Progress
 			end
 			local Eased = Progress
 			if Eased > 0 and Eased < 1 then
 				if Anim.Easer then
-					Eased = Anim.Easer(Eased, Anim, Delta, ConstantSpeed)
+					Eased = Anim.Easer(Eased, Anim, DeltaTime, ConstantSpeed)
 				elseif Anim.EaseStyle then
 					Eased = TweenService_GetValue(TweenService,
 						Eased, Anim.EaseStyle, Anim.EaseDir or Enum.EasingDirection.Out)
@@ -3164,8 +3197,8 @@ do
 		end
 		return Anim
 	end
-	function AnimMeta.Eval(Anim: Anim, Delta: number, Target: number): Anim
-		return Anim:Aim(Target):Compute(Delta):Consume()
+	function AnimMeta.Eval(Anim: Anim, DeltaTime: number, Target: number): Anim
+		return Anim:Aim(Target):Compute(DeltaTime):Consume()
 	end
 	function AnimMeta.Consume(Anim: Anim): Anim
 		local Dirty = false
@@ -3209,8 +3242,12 @@ do
 		Anim.EaseStyle = EaseStyle
 		return Anim
 	end
-	function AnimMeta.SetEaser(Anim: Anim, Easer: AnimEaser)
+	function AnimMeta.SetEaser(Anim: Anim, Easer: AnimEaser?)
 		Anim.Easer = Easer
+		return Anim
+	end
+	function AnimMeta.SetRespectReducedMotion(Anim: Anim, RespectReducedMotion: boolean?): Anim
+		Anim.RespectReducedMotion = RespectReducedMotion
 		return Anim
 	end
 end
