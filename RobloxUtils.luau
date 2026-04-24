@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 33 (2026-04-10)
+-- Version 34 (2026-04-24)
 --
 
 --
@@ -175,7 +175,8 @@
 -- Arbiter:UpdateForce()
 --
 -- type DLL_Node
--- .DLL_Create()
+-- .DLL_New()
+-- .DLL_Init()
 -- .DLL_ReplaceSentinel()
 -- .DLL_SentinelQuickReset()
 -- .DLL_Transfer()
@@ -192,6 +193,22 @@
 -- CAM:Destroy()
 -- CAM:Inputs()
 -- CAM:Bound()
+--
+-- type InputMode
+-- .InputMode
+-- .InputModeIsTouch
+-- .InputModeIsGamepad
+-- .InputModeIsMouseKeyboard
+-- .InputModeChanged()
+-- .InputType
+-- .InputTypeChanged()
+-- .InputMode_ByUIT
+-- .UIT_IsTouch()
+-- .UIT_IsMouseKeyboard()
+-- .UIT_IsGamepad()
+-- .IsMouse_ByUIT
+-- .UIT_IsMouse()
+-- .UIT_IsKeyboard()
 --
 -- type Cache
 -- .CacheNew()
@@ -1799,14 +1816,14 @@ end
 -- cleanup. See below for reference of all the datatypes that can be put into
 -- the maid.
 
-export type HasMaidClean<T> = T & { MaidClean: (T)->(); }
-export type HasDestroy<T> = T & { Destroy: (T)->(); }
-export type HasDestroyLower<T> = T & { destroy: (T)->(); }
-export type HasDisconnect<T> = T & { Disconnect: (T)->(); }
-export type HasDisconnectLower<T> = T & { disconnect: (T)->(); }
+export type HasMaidClean = { MaidClean: (HasMaidClean)->(); }
+export type HasDestroy = { Destroy: (HasDestroy)->(); }
+export type HasDestroyLower = { destroy: (HasDestroyLower)->(); }
+export type HasDisconnect = { Disconnect: (HasDisconnect)->(); }
+export type HasDisconnectLower = { disconnect: (HasDisconnectLower)->(); }
 export type MaidCall<T...> = {
 	Function: (T...)->();
-	Args: {any};
+	Args: {any}; -- T...
 
 	Destroy: (MaidCall: MaidCall<T...>)->();
 }
@@ -1824,14 +1841,14 @@ export type Maid = {
 		| ()->() -- Will directly call the function on clean.
 
 		-- The standard methods for cleaning up objects.
-		| HasDestroy<any> -- :Destroy()
-		| HasDestroyLower<any> -- :destroy()
-		| HasDisconnect<any> -- :Disconnect()
-		| HasDisconnectLower<any> -- :disconnect()
+		| HasDestroy -- :Destroy()
+		| HasDestroyLower -- :destroy()
+		| HasDisconnect -- :Disconnect()
+		| HasDisconnectLower -- :disconnect()
 
 		-- Custom cleanup method that will always be called with highest priority,
 		-- taking precedence over the standard methods like Destroy().
-		| HasMaidClean<any>
+		| HasMaidClean
 
 		-- Enables you to pass a function + arguments to a maid which will be
 		-- directly called when the maid is cleaned up. Use via Maid:AddCall().
@@ -2033,16 +2050,16 @@ do
 						end
 					end
 					MaidCleanRecursive(ValueMaid)
-				elseif type((Value :: HasMaidClean<any>).MaidClean) == "function" then
-					(Value :: HasMaidClean<any>):MaidClean()
-				elseif type((Value :: HasDestroy<any>).Destroy) == "function" then
-					(Value :: HasDestroy<any>):Destroy()
-				elseif type((Value :: HasDestroyLower<any>).destroy) == "function" then
-					(Value :: HasDestroyLower<any>):destroy()
-				elseif type((Value :: HasDisconnect<any>).Disconnect) == "function" then
-					(Value :: HasDisconnect<any>):Disconnect()
-				elseif type((Value :: HasDisconnectLower<any>).disconnect) == "function" then
-					(Value :: HasDisconnectLower<any>):disconnect()
+				elseif type((Value :: HasMaidClean).MaidClean) == "function" then
+					(Value :: HasMaidClean):MaidClean()
+				elseif type((Value :: HasDestroy).Destroy) == "function" then
+					(Value :: HasDestroy):Destroy()
+				elseif type((Value :: HasDestroyLower).destroy) == "function" then
+					(Value :: HasDestroyLower):destroy()
+				elseif type((Value :: HasDisconnect).Disconnect) == "function" then
+					(Value :: HasDisconnect):Disconnect()
+				elseif type((Value :: HasDisconnectLower).disconnect) == "function" then
+					(Value :: HasDisconnectLower):disconnect()
 				else
 					local Message = "Table found in Maid was not another Maid and did not have a Destroy, Disconnect, or MaidClean method."
 					if MAID_DEBUG_ENABLED then
@@ -2329,7 +2346,10 @@ export type AsyncPcall = {
 }
 export type AsyncPcallResult = {
 	Success: boolean;
-	Message: string; -- Only set if Success == false, otherwise will be nil.
+	-- Only set if Success == false, otherwise will be nil. This isn't actually
+	-- guaranteed to be a string, but for most intents and purposes it will be.
+	-- You should always call tostring() on it just in case however.
+	Message: string;
 	Values: {any};
 }
 function Module.AsyncPcallThread<T...>(
@@ -2344,7 +2364,7 @@ function Module.AsyncPcallThread<T...>(
 	AP.Thread = nil
 	AP.Result = {
 		Success = Success;
-		Message = Message;
+		Message = Message :: any;
 		Values = Values;
 	}
 end
@@ -2486,8 +2506,14 @@ export type DLL_Node<T> = T & {
 	DLL_Next: DLL_Node<T>;
 	DLL_Prev: DLL_Node<T>;
 }
-function Module.DLL_Create<T>(): DLL_Node<T>
+function Module.DLL_New<T>(): DLL_Node<T>
 	local Sentinel = {} :: DLL_Node<T>
+	Sentinel.DLL_Sentinel = Sentinel
+	Sentinel.DLL_Next = Sentinel
+	Sentinel.DLL_Prev = Sentinel
+	return Sentinel
+end
+function Module.DLL_Init<T>(Sentinel: DLL_Node<T>): DLL_Node<T>
 	Sentinel.DLL_Sentinel = Sentinel
 	Sentinel.DLL_Next = Sentinel
 	Sentinel.DLL_Prev = Sentinel
@@ -2511,15 +2537,15 @@ function Module.DLL_SentinelQuickReset<T>(Sentinel: DLL_Node<T>)
 	Sentinel.DLL_Prev = Sentinel
 end
 -- Transfers all the items in the From list to the To list. The items will be
--- append to the end of the of the existing items in the To list.
+-- appended to the end of the existing items in the To list.
 function Module.DLL_Transfer<T>(SentinelFrom: DLL_Node<T>, SentinelTo: DLL_Node<T>)
 	if SentinelFrom.DLL_Next ~= SentinelFrom then
 
 		local First = SentinelFrom.DLL_Next
 		local Last = SentinelFrom.DLL_Prev
 
-		Module.DLL_ReplaceSentinel(SentinelFrom, SentinelTo)
-		Module.DLL_SentinelQuickReset(SentinelFrom)
+		Module.DLL_ReplaceSentinel<<any>>(SentinelFrom, SentinelTo)
+		Module.DLL_SentinelQuickReset<<any>>(SentinelFrom)
 
 		First.DLL_Prev = SentinelTo.DLL_Prev
 		Last.DLL_Next = SentinelTo
@@ -2541,19 +2567,19 @@ function Module.DLL_AppendAfter<T>(Item: DLL_Node<T>, Node: DLL_Node<T>)
 end
 -- Append a node before the given item in the list.
 function Module.DLL_AppendBefore<T>(Item: DLL_Node<T>, Node: DLL_Node<T>)
-	Module.DLL_AppendAfter(Item.DLL_Prev, Node)
+	Module.DLL_AppendAfter<<any>>(Item.DLL_Prev, Node)
 end
 -- Append a node as the first item in the list using the sentinel.
 function Module.DLL_SentinelAppendFirst<T>(Sentinel: DLL_Node<T>, Node: DLL_Node<T>)
-	Module.DLL_AppendAfter(Sentinel, Node)
+	Module.DLL_AppendAfter<<any>>(Sentinel, Node)
 end
 -- Append a node as the last item in the list using the sentinel.
 function Module.DLL_SentinelAppendLast<T>(Sentinel: DLL_Node<T>, Node: DLL_Node<T>)
-	Module.DLL_AppendBefore(Sentinel.DLL_Prev, Node)
+	Module.DLL_AppendBefore<<any>>(Sentinel.DLL_Prev, Node)
 end
 
 -- Returns true if the nodes are inside the same list. Can take sentinels too.
-function Module.DLL_AreLinked<T>(A: DLL_Node<T>, B: DLL_Node<T>): boolean
+function Module.DLL_AreLinked<T,U>(A: DLL_Node<T>, B: DLL_Node<U>): boolean
 	return A.DLL_Sentinel == B.DLL_Sentinel
 end
 -- Returns true if the node is the sentinel of the list.
@@ -2733,6 +2759,115 @@ do
 		UpdateBindings(CAM)
 		return CAM
 	end
+end
+
+--
+-- Input Mode
+--
+export type InputMode =
+	| "touch"
+	| "mouse_keyboard"
+	| "gamepad"
+do
+	-- Mapping of UserInputTypes to InputModes.
+	Module.InputMode_ByUIT = {
+		[Enum.UserInputType.Touch] = "touch";
+
+		[Enum.UserInputType.Keyboard] = "mouse_keyboard";
+		[Enum.UserInputType.MouseMovement] = "mouse_keyboard";
+		[Enum.UserInputType.MouseButton1] = "mouse_keyboard";
+		[Enum.UserInputType.MouseButton2] = "mouse_keyboard";
+		[Enum.UserInputType.MouseButton3] = "mouse_keyboard";
+		[Enum.UserInputType.MouseWheel] = "mouse_keyboard";
+
+		[Enum.UserInputType.Gamepad1] = "gamepad";
+		[Enum.UserInputType.Gamepad2] = "gamepad";
+		[Enum.UserInputType.Gamepad3] = "gamepad";
+		[Enum.UserInputType.Gamepad4] = "gamepad";
+		[Enum.UserInputType.Gamepad5] = "gamepad";
+		[Enum.UserInputType.Gamepad6] = "gamepad";
+		[Enum.UserInputType.Gamepad7] = "gamepad";
+		[Enum.UserInputType.Gamepad8] = "gamepad";
+	} :: {[Enum.UserInputType]: InputMode}
+	function Module.UIT_IsValid(UIT: Enum.UserInputType): boolean
+		return Module.InputMode_ByUIT[UIT] ~= nil
+	end
+	function Module.UIT_IsTouch(UIT: Enum.UserInputType): boolean
+		return Module.InputMode_ByUIT[UIT] == "touch"
+	end
+	function Module.UIT_IsMouseKeyboard(UIT: Enum.UserInputType): boolean
+		return Module.InputMode_ByUIT[UIT] == "mouse_keyboard"
+	end
+	function Module.UIT_IsGamepad(UIT: Enum.UserInputType): boolean
+		return Module.InputMode_ByUIT[UIT] == "gamepad"
+	end
+
+	-- Higher granularity mapping of mouse_keyboard UserInputTypes to mouse or
+	-- keyboard.
+	Module.IsMouse_ByUIT = {
+		[Enum.UserInputType.MouseMovement] = true;
+		[Enum.UserInputType.MouseButton1] = true;
+		[Enum.UserInputType.MouseButton2] = true;
+		[Enum.UserInputType.MouseButton3] = true;
+		[Enum.UserInputType.MouseWheel] = true;
+	} :: {[Enum.UserInputType]: boolean}
+	function Module.UIT_IsMouse(UIT: Enum.UserInputType): boolean
+		return if Module.IsMouse_ByUIT[UIT] then true else false
+	end
+	function Module.UIT_IsKeyboard(UIT: Enum.UserInputType): boolean
+		return UIT == Enum.UserInputType.Keyboard
+	end
+
+	--
+	-- Input Modes
+	--
+
+	-- These will be set later.
+	Module.InputMode = (nil :: any) :: InputMode
+	Module.InputModeIsTouch = (nil :: any) :: boolean
+	Module.InputModeIsMouseKeyboard = (nil :: any) :: boolean
+	Module.InputModeIsGamepad = (nil :: any) :: boolean
+	Module.InputType = (nil :: any) :: Enum.UserInputType
+
+	-- External code can override these functions to run code immediately after
+	-- changes.
+	Module.InputModeChanged = function() end
+	Module.InputTypeChanged = function() end
+
+	local function LastInputTypeChanged(UIT: Enum.UserInputType)
+		local InputMode = Module.InputMode_ByUIT[UIT]
+		if InputMode then
+			-- All values should be set first before running any callbacks.
+			local InputTypeDirty = Module.InputType ~= UIT
+			Module.InputType = UIT
+			if Module.InputMode ~= InputMode then
+				Module.InputMode = InputMode
+				Module.InputModeIsTouch = InputMode == "touch"
+				Module.InputModeIsMouseKeyboard = InputMode == "mouse_keyboard"
+				Module.InputModeIsGamepad = InputMode == "gamepad"
+				Module.InputModeChanged()
+			end
+			if InputTypeDirty then
+				Module.InputTypeChanged()
+			end
+		end
+	end
+
+	local UserInputService = game:GetService("UserInputService")
+	UserInputService.LastInputTypeChanged:Connect(LastInputTypeChanged)
+	local LastInputType = UserInputService:GetLastInputType()
+
+	-- If the last input type was not valid (e.g. nobody has made an input
+	-- yet), we decide the input type automatically based on what devices
+	-- the player has plugged in.
+	if not Module.UIT_IsValid(LastInputType) then
+		LastInputType =
+			if UserInputService.MouseEnabled then Enum.UserInputType.Keyboard
+			elseif #UserInputService:GetConnectedGamepads() > 0 then Enum.UserInputType.Gamepad1
+			elseif UserInputService.TouchEnabled then Enum.UserInputType.Touch
+			else Enum.UserInputType.Keyboard
+	end
+	LastInputTypeChanged(LastInputType)
 end
 
 --
@@ -4266,7 +4401,7 @@ do
 	end
 
 	local AutoUpdateBillboards: DLL_Node<{ SB: SurfaceBillboard; }> =
-		Module.DLL_Create() :: any
+		Module.DLL_New() :: any
 	local UpdateConnection = nil :: RBXScriptConnection?
 
 	local function AutoUpdateSurfaceBillboards()
@@ -4444,9 +4579,10 @@ export type OpacityGroup = {
 	RemoveRoot: (OG: OpacityGroup, ...Instance)->(OpacityGroup);
 
 	-- Update the transparency of a property on an existing object. (Use this if
-	-- you want to change its transparency manually. Changes will be applied on
-	-- the next write.) NOTE: This API takes values in Transparency format instead
-	-- of Opacity format, as that makes the most sense from the usage code's perspective.
+	-- you want to change its transparency manually. Changes will not be applied
+	-- immediately, instead they will be applied on the next write.) NOTE: This
+	-- API takes values in Transparency format instead of Opacity format, as that
+	-- makes the most sense from the usage code's perspective.
 	SetProperty: (
 		OG: OpacityGroup,
 		Object: Instance,
@@ -4455,14 +4591,14 @@ export type OpacityGroup = {
 		MakeDirty: boolean?
 	)->(OpacityGroup);
 
-	-- Helper to set OG.Opacity inline.
+	-- Helper to set the OG.Opacity field using method chaining.
 	SetOpacity: (OG: OpacityGroup, Opacity: number)->(OpacityGroup);
 
 	-- Call this to check if the current opacity value changed (or one of the
 	-- derived instance's opacities changed), and call ApplyProperties() if so.
 	-- This will also recursively update all children OpacityGroups, and compute
 	-- OG.AbsoluteOpacity by taking into account the parent group's opacity.
-	Update: (OG: OpacityGroup,ForceWriteAll: boolean?)->(OpacityGroup);
+	Update: (OG: OpacityGroup, ForceWriteAll: boolean?, NonRecursive: boolean?)->(OpacityGroup);
 
 	-- Call this to write transparency properties (using OG.AbsoluteOpacity, NOT
 	-- OG.Opacity!). Will only write individual properties if their cached
@@ -4478,11 +4614,14 @@ export type OpacityGroup = {
 	SetParent: (ChildOG: OpacityGroup, ParentOG: OpacityGroup?)->(OpacityGroup);
 
 	-- Clear all instances from the group (does not clear children, which is an
-	-- unsupported use case right now.
+	-- unsupported use case right now).
 	Clear: (OG: OpacityGroup)->(OpacityGroup);
 
-	-- Destroy the transparency group, removing it from its own parent group, and
-	-- unparenting all children groups.
+	-- Destroy the transparency group, removing it from its parent group, and
+	-- removing its children (does not destroy children, which is an unsupported
+	-- use case right now). In general, OpacityGroups should be considered
+	-- relatively stable and self-contained, the parenting behaviour is solely a
+	-- helper for blending opacities, NOT for lifetime management.
 	Destroy: (OG: OpacityGroup)->(OpacityGroup);
 }
 export type OG_Instance = {
@@ -4689,7 +4828,7 @@ do
 		return OG
 	end
 
-	function OGMeta.Update(OG: OpacityGroup, ForceWriteAll: boolean?): OpacityGroup
+	function OGMeta.Update(OG: OpacityGroup, ForceWriteAll: boolean?, NonRecursive: boolean?): OpacityGroup
 
 		-- Update absolute opacity.
 		local AbsoluteOpacity =
@@ -4706,7 +4845,7 @@ do
 		end
 
 		-- Update children recursively.
-		if OG.Children then
+		if not NonRecursive and OG.Children then
 			for _, Child in OG.Children do
 				Child:Update(ForceWriteAll)
 			end
@@ -4779,14 +4918,32 @@ do
 		return OG
 	end
 	function OGMeta.Destroy(OG: OpacityGroup): OpacityGroup
+		-- Remove from parent.
+		local PrevParent = OG.Parent
+		if PrevParent then
+			OG.Parent = nil
+			local Array = PrevParent.Children
+			if Array then
+				local Index = table.find(Array, OG)
+				if Index then
+					table.remove(Array, Index)
+					if not Array[1] then
+						PrevParent.Children = nil
+					end
+				end
+			end
+		end
+		-- Remove children.
 		local Array = OG.Children
 		if Array then
+			OG.Children = nil
 			for _, Child in Array do
 				Child.Parent = nil
 			end
-			OG.Children = nil
 		end
-		return OG:Clear()
+		-- Clear the OG.
+		OG:Clear()
+		return OG
 	end
 end
 
