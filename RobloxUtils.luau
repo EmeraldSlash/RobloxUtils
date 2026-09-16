@@ -5,7 +5,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version 34 (2026-04-24)
+-- Version 37 (2026-09-17)
 --
 
 --
@@ -163,7 +163,7 @@
 -- SignalConnection:Destroy/Disconnect()
 --
 -- type Arbiter
--- .ArbiterNew
+-- .ArbiterNew()
 -- Arbiter:Once()
 -- Arbiter:Every()
 -- Arbiter:Grab()
@@ -173,6 +173,17 @@
 -- Arbiter:Clear()
 -- Arbiter:Update()
 -- Arbiter:UpdateForce()
+--
+-- type StopWatch
+-- .StopWatchNew()
+-- StopWatch:SetEnabled()
+-- StopWatch:Push()
+-- StopWatch:Mark()
+-- StopWatch:Done()
+-- StopWatch:KeyAdd()
+-- StopWatch:KeyDump()
+-- StopWatch:KeyDumpAll()
+-- StopWatch:Destroy()
 --
 -- type DLL_Node
 -- .DLL_New()
@@ -322,7 +333,7 @@ end
 -- float >= 1) will be given index 1.
 function Module.IndexFromNumber(ValueFloat: number, MaxIndex: number)
 	return
-		if ValueFloat < 1 or MaxIndex < 1 then 1
+		if ValueFloat < 0 or MaxIndex < 1 then 1
 		else math.clamp(math.ceil(ValueFloat / (1/MaxIndex)), 1, MaxIndex)
 end
 
@@ -1180,6 +1191,11 @@ export type TableStringifyParams = {
 
 	-- Include the memory address of every expanded table. Default value: false.
 	ShowAddress: boolean?;
+
+	-- Table keys will be rendered in sorted order. Keys will be ordered in the
+	-- following way: booleans, strings, numbers, vector3s, userdatas,
+	-- tostring().
+	SortKeys: boolean?;
 }
 function Module.TableStringifyParamsNew(Params: TableStringifyParams)
 	return Params
@@ -1189,6 +1205,7 @@ Module.TableStringifyParamsDefault = Module.TableStringifyParamsNew({
 	MaxDepth = math.huge;
 	Deduplicate = false;
 	ShowAddress = false;
+	SortKeys = false;
 })
 
 -- This function will stringify a table in a nice format with useful
@@ -1229,6 +1246,7 @@ function Module.TableStringify(
 	local _MaxDepth = Params.MaxDepth or math.huge
 	local Deduplicate = if Params.Deduplicate then true else false
 	local ShowAddress = if Params.ShowAddress then true else false
+	local SortKeys = if Params.SortKeys then true else false
 
 	-- First, recurse through all the tables and give them IDs.
 	local TableIDs = {}
@@ -1316,6 +1334,7 @@ function Module.TableStringify(
 			Table: any;
 			LastKey: any?;
 			DisplayedLabels: boolean?;
+			Sorted: {any}?;
 		}} = {}
 
 		-- Initial node for the table we are trying to stringify.
@@ -1368,8 +1387,59 @@ function Module.TableStringify(
 						Output[#Output+1] = ";"
 					end
 
-					local Key, Value = next(Node.Table, Node.LastKey)
-					Node.LastKey = Key
+					local Key, Value
+					if not SortKeys then
+						Key, Value = next(Node.Table, Node.LastKey)
+						Node.LastKey = Key
+					else
+						if not Node.Sorted then
+							local Sorted = {}
+							for Key in Node.Table do
+								Sorted[#Sorted+1] = Key
+							end
+							Node.Sorted = Sorted
+							table.sort(Sorted, function(A, B)
+								local AType = type(A)
+								local BType = type(B)
+
+								if AType == "boolean" and BType == "boolean" then return if A and not B then true else false end
+								if AType == "boolean" then return true end
+								if BType == "boolean" then return false end
+
+								if AType == "string" and BType == "string" then return (A :: string) < (B :: string) end
+								if AType == "string" then return true end
+								if BType == "string" then return false end
+
+								if AType == "number" and BType == "number" then return (A :: number) < (B :: number) end
+								if AType == "number" then return true end
+								if BType == "number" then return false end
+
+								local ATOf = typeof(A)
+								local BTOf = typeof(B)
+
+								if ATOf == "Vector3" and BTOf == "Vector3" then
+									local AV = A :: Vector3
+									local BV = B :: Vector3
+									return
+										if AV.X >= BV.X then false else
+										if AV.Y >= BV.Y then false else
+										if AV.Z >= BV.Z then false else true
+								end
+
+								if AType == "userdata" and BType == "userdata" then return ATOf < BTOf end
+								if AType == "userdata" then return true end
+								if BType == "userdata" then return false end
+
+								return tostring(A) < tostring(B)
+							end)
+						end
+						local SortedIndex, SortedKey = next(Node.Sorted :: {any}, Node.LastKey)
+						if SortedKey then
+							Node.LastKey = SortedIndex
+							Key = SortedKey
+							Value = Node.Table[SortedKey]
+						end
+					end
 
 					if Key == nil then
 						IndentDepth -= 1
@@ -1774,7 +1844,7 @@ function Module.MakeRemotes<T>(
 			if InvalidCallback and
 				(Kind == Module.RemoteServer or Kind == Module.RemoteServerU)
 			then
-				RemoteEvent.OnServerEvent:Connect(function(Player)
+				(RemoteEvent :: RemoteEvent).OnServerEvent:Connect(function(Player)
 					InvalidCallback(Player, Name)
 				end)
 			end
@@ -1827,59 +1897,58 @@ export type MaidCall<T...> = {
 
 	Destroy: (MaidCall: MaidCall<T...>)->();
 }
+export type MaidValue =
+	-- Maids can be cleaned up recursively. Any table that has a MaidValues field
+	-- will be treated as if it is a Maid.
+	| Maid
+
+	-- The standard data types that can be cleaned up.
+	| RBXScriptConnection -- Will call Connection:Disconnect() on clean.
+	| Instance -- Will call Instance:Destroy() on clean.
+	| thread -- Will call coroutine.close(Thread) on clean.
+	| ()->() -- Will directly call the function on clean.
+
+	-- The standard methods for cleaning up objects.
+	| HasDestroy -- :Destroy()
+	| HasDestroyLower -- :destroy()
+	| HasDisconnect -- :Disconnect()
+	| HasDisconnectLower -- :disconnect()
+
+	-- Custom cleanup method that will always be called with highest priority,
+	-- taking precedence over the standard methods like Destroy().
+	| HasMaidClean
+
+	-- Enables you to pass a function + arguments to a maid which will be
+	-- directly called when the maid is cleaned up. Use via Maid:AddCall().
+	| MaidCall<any>
+
+	-- Some objects may have issues with the maid calling their default
+	-- destroy/cleanup method, such as throwing an error if the method is called
+	-- redundantly or from triggering self-recursion. There are three ways you
+	-- can avoid this.
+	--
+	-- Option 1: Give the maid a custom scoped cleanup function rather than
+	-- giving the object itself.
+	--[[
+	maid:Add(function()
+		customCleanup(object)
+	end)
+	--]]
+	--
+	-- Option 2: Add a MaidClean method to the object and give the object to the
+	-- maid.
+	--[[
+	object.MaidClean = customCleanup
+	maid:Add(object)
+	--]]
+	--
+	-- Option 3: Create a MaidCall and give it to the maid.
+	--[[
+	maid:AddCall(customCleanup, object)
+	--]]
 export type Maid = {
-	MaidValues: {
-
-		-- Maids can be cleaned up recursively. Any table that has a MaidValues
-		-- field will be treated as if it is a Maid.
-		| Maid
-
-		-- The standard data types that can be cleaned up.
-		| RBXScriptConnection -- Will call Connection:Disconnect() on clean.
-		| Instance -- Will call Instance:Destroy() on clean.
-		| thread -- Will call coroutine.close(Thread) on clean.
-		| ()->() -- Will directly call the function on clean.
-
-		-- The standard methods for cleaning up objects.
-		| HasDestroy -- :Destroy()
-		| HasDestroyLower -- :destroy()
-		| HasDisconnect -- :Disconnect()
-		| HasDisconnectLower -- :disconnect()
-
-		-- Custom cleanup method that will always be called with highest priority,
-		-- taking precedence over the standard methods like Destroy().
-		| HasMaidClean
-
-		-- Enables you to pass a function + arguments to a maid which will be
-		-- directly called when the maid is cleaned up. Use via Maid:AddCall().
-		| MaidCall<any>
-
-		-- Some objects may have issues with the maid calling their default
-		-- destroy/cleanup method, such as throwing an error if the method is
-		-- called redundantly or from triggering self-recursion. There are three
-		-- ways you can avoid this.
-		--
-		-- Option 1: Give the maid a custom scoped cleanup function rather than
-		-- giving the object itself.
-		--[[
-		maid:Add(function()
-			customCleanup(object)
-		end)
-		--]]
-		--
-		-- Option 2: Add a MaidClean method to the object and give the object to
-		-- the maid.
-		--[[
-		object.MaidClean = customCleanup
-		maid:Add(object)
-		--]]
-		--
-		-- Option 3: Create a MaidCall and give it to the maid.
-		--[[
-		maid:AddCall(customCleanup, object)
-		--]]
-
-	};
+	-- The values stored in the maid that will be cleaned up.
+	MaidValues: {MaidValue};
 
 	-- The parent of the maid. The maid will be removed from its parent
 	-- automatically when cleaned up to prevent memory leaks.
@@ -1954,11 +2023,11 @@ do
 		Maid.DebugName = ("maid-%d"):format(DebugMaidId);
 		Maid.DebugTrace = debug.traceback(nil, 2);
 	end
-	local function DebugPrint(Message)
+	local function DebugPrint(Message: string)
 		if MAID_DEBUG_PRINT_TRACE then
-			Message = debug.traceback(Message, 2)
+			Message = debug.traceback("[maid] "..Message, 2)
 		end
-		print(Message)
+		print("[maid] "..Message)
 	end
 
 	local MaidCallMeta: MaidCall<any> =
@@ -2005,7 +2074,7 @@ do
 		-- most efficient way to clean up maids, faster even than an iterative
 		-- implementation.
 		while true do
-			local Value = table.remove(Maid.MaidValues)
+			local Value = table.remove(Maid.MaidValues) :: MaidValue
 			if not Value then
 				break
 			elseif typeof(Value) == "RBXScriptConnection" then
@@ -4054,6 +4123,203 @@ do
 			A.CallbackEvery(A)
 		end
 		return Changed
+	end
+end
+
+--
+-- Stop Watch (SW)
+--
+-- Helper for logging basic performance metrics.
+--
+-- SW:Mark(Name, Now?) and SW:Done(Now?) are used for tracking the time between
+-- sequential operations automatically.
+--
+-- SW:KeyAdd(Key, Amount), SW:KeyDump(Key), and SW:KeyDumpAll() are for manually
+-- tracking how long non-sequential things take (such as repeated interleaved
+-- operations).
+--
+-- A child SW can be pushed using Parent:Push(Prefix). The child's prefix will
+-- be the pushed prefix appended to the parent's prefix, and the child will
+-- start being tracked immediately, and will stop being tracked the next time
+-- Parent:Mark(), Parent:Done(), or Parent:Destroy() called.
+--
+export type StopWatchUnit = "s" | "ms"
+export type StopWatch = {
+	Prefix: string?;
+	MessageType: Enum.MessageType?;
+	Unit: StopWatchUnit?;
+
+	Enabled: boolean;
+	Keys: {[string]: number};
+
+	PrevAt: number?;
+	PrevDone: boolean?;
+
+	Parent: StopWatch?;
+	Children: {StopWatch}?;
+
+	SetEnabled: (SW: StopWatch, Enabled: any)->(StopWatch);
+
+	Push: (SW: StopWatch, Prefix: string)->(StopWatch);
+
+	Mark: (SW: StopWatch, Name: string, Now: number?, IsDone: boolean?)->(StopWatch);
+	Done: (SW: StopWatch, Now: number?)->(StopWatch);
+
+	KeyAdd: (SW: StopWatch, Key: string, Amount: number)->(StopWatch);
+	KeyDump: (SW: StopWatch, Key: string)->(StopWatch);
+	KeyDumpAll: (SW: StopWatch)->(StopWatch);
+
+	Destroy: (SW: StopWatch)->(StopWatch);
+}
+do
+	local StopWatchMeta: StopWatch =
+		(function() local C = {}; C.__index = C; return C; end)() :: any
+
+	function Module.StopWatchNew(
+		Prefix: string?,
+		MessageType: Enum.MessageType?,
+		Unit: StopWatchUnit?
+	): StopWatch
+		return setmetatable({
+			Prefix = Prefix;
+			MessageType = MessageType;
+			Unit = Unit;
+			Enabled = true;
+			Keys = {};
+			PrevDone = true;
+		}, StopWatchMeta) :: any
+	end
+
+	function StopWatchMeta.SetEnabled(SW: StopWatch, Enabled: any)
+		SW.Enabled = if Enabled then true else false
+		return SW
+	end
+
+	function StopWatchMeta.Push(ParentSW: StopWatch, Prefix: string?, Now: number?)
+		local ChildSW = Module.StopWatchNew(
+			(ParentSW.Prefix or "").." > "..(if Prefix then Prefix else ""),
+			ParentSW.MessageType,
+			ParentSW.Unit)
+
+		ChildSW.Parent = ParentSW
+		local Children = ParentSW.Children or {}
+		ParentSW.Children = Children
+		Children[#Children+1] = ChildSW
+
+		ChildSW.Enabled = ParentSW.Enabled
+		ChildSW:Mark("<Push>", Now or ParentSW.PrevAt)
+
+		return ChildSW
+	end
+
+	local LogService = game:GetService("LogService")
+
+	function StopWatchMeta.Mark(SW: StopWatch, Name: string, Now: number?, IsDone: boolean?)
+		if SW.Enabled then
+			local RealNow = Now or os.clock()
+
+			-- End children.
+			do
+				local Children = SW.Children
+				if Children then
+					SW.Children = nil
+					for _, ChildSW in Children do
+						ChildSW.Parent = nil
+						ChildSW:Mark("<Pop>", RealNow, true)
+					end
+				end
+			end
+
+			-- Do the actual logging.
+			if (not SW.PrevDone) or (not IsDone) then
+				if SW.PrevAt then
+					local Duration = RealNow-SW.PrevAt
+					LogService:Log(
+						SW.MessageType or Enum.MessageType.MessageOutput,
+						(tostring(SW.Prefix) or "").." {PrevDurationString} {MarkerName}",
+						{
+							MarkerName = Name;
+							PrevDuration = Duration;
+							PrevDurationString =
+								if SW.Unit == "s" then
+								("[^%7ss]"):format(("%.2f"):format(Duration)) else
+								("[^%6sms]"):format(("%.2f"):format(Duration*1000))
+						})
+				else
+					LogService:Log(
+						SW.MessageType or Enum.MessageType.MessageOutput,
+						(tostring(SW.Prefix) or "").." [---------] {MarkerName}",
+						{
+							MarkerName = Name;
+						})
+				end
+			end
+			SW.PrevDone = if IsDone then true else false
+			SW.PrevAt = RealNow
+
+			-- Remove from parent.
+			if IsDone then
+				local Parent = SW.Parent
+				if Parent then
+					SW.Parent = nil
+					local Children = Parent.Children
+					if Children then
+						local Index = table.find(Children, SW)
+						if Index then
+							table.remove(Children, Index)
+							if not Children[1] then
+								Parent.Children = nil
+							end
+						end
+					end
+				end
+			end
+		end
+
+		return SW
+	end
+
+	function StopWatchMeta.Done(SW: StopWatch, Now: number?)
+		SW:Mark("<Done>", Now, true)
+		SW:KeyDumpAll()
+		return SW
+	end
+
+	function StopWatchMeta.KeyAdd(SW: StopWatch, Key: string, Amount: number)
+		if SW.Enabled then
+			SW.Keys[Key] = (SW.Keys[Key] or 0) + Amount
+		end
+		return SW
+	end
+	function StopWatchMeta.KeyDump(SW: StopWatch, Key: string)
+		if SW.Enabled then
+			local Value = SW.Keys[Key] or 0
+			SW.Keys[Key] = nil
+			LogService:Log(
+				SW.MessageType or Enum.MessageType.MessageOutput,
+				(tostring(SW.Prefix) or "").." {DurationString} {MarkerName}",
+				{
+					MarkerName = Key;
+					Duration = Value;
+					DurationString =
+						if SW.Unit == "s" then
+						("[>%7ss]"):format(("%.2f"):format(Value)) else
+						("[>%6sms]"):format(("%.2f"):format(Value*1000))
+				})
+		end
+		return SW
+	end
+	function StopWatchMeta.KeyDumpAll(SW: StopWatch)
+		for Key in SW.Keys do
+			SW:KeyDump(Key)
+		end
+		return SW
+	end
+
+	function StopWatchMeta.Destroy(SW: StopWatch)
+		SW:Mark("<Destroy>", nil, true)
+		SW:KeyDumpAll()
+		return SW
 	end
 end
 
